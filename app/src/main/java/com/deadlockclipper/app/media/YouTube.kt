@@ -3,6 +3,7 @@ package com.deadlockclipper.app.media
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaMuxer
+import com.deadlockclipper.app.BuildConfig
 import com.deadlockclipper.app.util.AppLog
 import com.deadlockclipper.app.util.Cancelled
 import com.deadlockclipper.app.util.FriendlyError
@@ -67,7 +68,7 @@ object YouTube {
     /** Downloads the video; returns the file. */
     fun download(url: String, folder: File, task: Task): File {
         init()
-        AppLog.i(TAG, "Downloading $url")
+        AppLog.i(TAG, "Downloading $url (extractor ${BuildConfig.NEWPIPE_VERSION})")
         try {
             task.progress(0.0, "Looking up the video")
             val ex = ServiceList.YouTube.getStreamExtractor(url.trim())
@@ -112,6 +113,13 @@ object YouTube {
             throw e
         } catch (e: FriendlyError) {
             throw e
+        } catch (e: org.schabi.newpipe.extractor.exceptions.ContentNotAvailableException) {
+            AppLog.e(TAG, "YouTube refused the request", e)
+            throw FriendlyError(
+                "YouTube refused the download (${e.message}). YouTube changes often; install the newest " +
+                    "version of the app and try again. Private, members-only and age-restricted videos can't be downloaded.",
+                AppLog.stackTrace(e),
+            )
         } catch (e: Exception) {
             AppLog.e(TAG, "YouTube download failed", e)
             throw FriendlyError(FAILED, AppLog.stackTrace(e))

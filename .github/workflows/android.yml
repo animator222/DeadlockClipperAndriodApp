@@ -26,8 +26,18 @@ jobs:
       - name: Unit tests (highlight picking, layouts, settings)
         run: ./gradlew --no-daemon :core:test
 
+      - name: Find the newest YouTube extractor (NewPipeExtractor)
+        id: newpipe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/TeamNewPipe/NewPipeExtractor/releases/latest | jq -r .tag_name || true)
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then tag=v0.24.8; fi
+          echo "Using NewPipeExtractor $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
       - name: Build the APK
-        run: ./gradlew --no-daemon :app:assembleRelease :app:lintRelease
+        run: ./gradlew --no-daemon -PnewpipeVersion=${{ steps.newpipe.outputs.tag }} :app:assembleRelease :app:lintRelease
 
       - name: Upload the APK
         uses: actions/upload-artifact@v4
