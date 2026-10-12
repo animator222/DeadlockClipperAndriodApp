@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write # publishes the APK as a GitHub release
+
 jobs:
   build:
     runs-on: ubuntu-latest
