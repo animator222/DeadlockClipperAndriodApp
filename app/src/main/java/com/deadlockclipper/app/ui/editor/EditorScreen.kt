@@ -232,6 +232,7 @@ fun EditorScreen(vm: AppViewModel, target: EditorTarget) {
         // over the lower part only when asked for. Tablets get side panels.
         val tablet = maxWidth > 840.dp && maxHeight > 600.dp
         val landscape = !tablet && maxWidth > maxHeight
+        val panelHeight = maxHeight * 0.4f
         val now = { player.currentPosition / 1000.0 }
         val controls: @Composable () -> Unit = {
             Transport(st, info.duration, playing, muted, { togglePlay() }, { step(it) }, { frame(it) }, { muted = it })
@@ -267,7 +268,7 @@ fun EditorScreen(vm: AppViewModel, target: EditorTarget) {
                     StageArea(st, glView, hint, Modifier.weight(1f).fillMaxWidth())
                     Column(Modifier.fillMaxWidth().background(C.edPanel).padding(horizontal = 6.dp)) {
                         controls()
-                        if (tab.isNotEmpty()) Panel(Modifier.fillMaxWidth().height(maxHeight * 0.4f)) { panel() }
+                        if (tab.isNotEmpty()) Panel(Modifier.fillMaxWidth().height(panelHeight)) { panel() }
                         toolbar()
                     }
                 }
