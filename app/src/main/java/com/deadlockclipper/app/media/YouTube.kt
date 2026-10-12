@@ -89,11 +89,13 @@ object YouTube {
                 val vFile = File(folder, "$base.video")
                 val aFile = File(folder, "$base.audio")
                 val out = File(folder, "$base." + if (webm) "webm" else "mp4")
-                val vSize = sizeOf(video.content)
-                val aSize = sizeOf(audio.content)
+                val vSrc = Link(video.content) { freshUrl(url, video.itag, true) }
+                val aSrc = Link(audio.content) { freshUrl(url, audio.itag, false) }
+                val vSize = sizeOf(vSrc)
+                val aSize = sizeOf(aSrc)
                 val total = (vSize + aSize).coerceAtLeast(1).toDouble()
-                fetch(video.content, vFile, vSize, task) { done -> task.progress(0.99 * done / total, "Downloading from YouTube") }
-                fetch(audio.content, aFile, aSize, task) { done -> task.progress(0.99 * (vSize + done) / total, "Downloading from YouTube") }
+                fetch(vSrc, vFile, vSize, task) { done -> task.progress(0.99 * done / total, "Downloading from YouTube") }
+                fetch(aSrc, aFile, aSize, task) { done -> task.progress(0.99 * (vSize + done) / total, "Downloading from YouTube") }
                 task.progress(0.99, "Joining video and audio")
                 mux(vFile, aFile, out, webm)
                 vFile.delete()
@@ -106,8 +108,9 @@ object YouTube {
                 .maxByOrNull { it.height }
                 ?: throw FriendlyError(FAILED, "No downloadable stream found")
             val out = File(folder, "$base.mp4")
-            val size = sizeOf(muxed.content)
-            fetch(muxed.content, out, size, task) { done -> task.progress(0.99 * done / size.coerceAtLeast(1), "Downloading from YouTube") }
+            val src = Link(muxed.content) { freshUrl(url, muxed.itag, null) }
+            val size = sizeOf(src)
+            fetch(src, out, size, task) { done -> task.progress(0.99 * done / size.coerceAtLeast(1), "Downloading from YouTube") }
             return out
         } catch (e: Cancelled) {
             throw e
@@ -145,30 +148,86 @@ object YouTube {
         return (original.ifEmpty { usable }).maxByOrNull { it.averageBitrate }
     }
 
-    private fun sizeOf(url: String): Long {
-        val req = okhttp3.Request.Builder().url(url).header("User-Agent", UA).header("Range", "bytes=0-0").build()
+    /** A stream link that can be replaced by a fresh one when YouTube stops accepting it. */
+    private class Link(var url: String, val refresh: () -> String?)
+
+    /** Looks the video up again and returns a new link for the same stream (itag). */
+    private fun freshUrl(pageUrl: String, itag: Int, videoOnly: Boolean?): String? = try {
+        val ex = ServiceList.YouTube.getStreamExtractor(pageUrl.trim())
+        ex.fetchPage()
+        when (videoOnly) {
+            true -> ex.videoOnlyStreams.firstOrNull { it.itag == itag && it.isUrl }?.content
+            false -> ex.audioStreams.firstOrNull { it.itag == itag && it.isUrl }?.content
+            null -> ex.videoStreams.firstOrNull { it.itag == itag && it.isUrl }?.content
+        }
+    } catch (e: Exception) {
+        AppLog.w(TAG, "Couldn't refresh the stream link: $e")
+        null
+    }
+
+    /** Which YouTube app a stream link was made for ("c=ANDROID", "c=IOS", "c=WEB", ...). */
+    private fun clientOf(url: String) = Regex("[?&]c=([A-Za-z0-9_]+)").find(url)?.groupValues?.get(1)?.uppercase() ?: "WEB"
+
+    /** YouTube checks that the downloader looks like the app the link was made for. */
+    private fun userAgentFor(client: String): String {
+        val method = when {
+            client.startsWith("ANDROID") -> "getAndroidUserAgent"
+            client.startsWith("IOS") -> "getIosUserAgent"
+            else -> null
+        } ?: return UA
+        return try {
+            val helper = Class.forName("org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper")
+            helper.getMethod(method, org.schabi.newpipe.extractor.localization.Localization::class.java).invoke(null, null) as String
+        } catch (e: Throwable) {
+            if (client.startsWith("IOS")) "com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_2_1 like Mac OS X;)"
+            else "com.google.android.youtube/19.28.35 (Linux; U; Android 15) gzip"
+        }
+    }
+
+    /** One piece of a stream, requested the way YouTube's own players do (range in the link). */
+    private fun pieceRequest(url: String, from: Long, to: Long, n: Int): okhttp3.Request {
+        val client = clientOf(url)
+        val b = okhttp3.Request.Builder()
+            .url("$url&range=$from-$to&rn=$n")
+            .header("User-Agent", userAgentFor(client))
+            .header("Accept", "*/*")
+            .header("Accept-Encoding", "identity")
+        if (client.startsWith("WEB") || client.startsWith("MWEB") || client.startsWith("TVHTML5")) {
+            b.header("Origin", "https://www.youtube.com").header("Referer", "https://www.youtube.com/")
+            b.post(byteArrayOf(0x78, 0).toRequestBody()) // what the web player sends
+        } else {
+            b.get()
+        }
+        return b.build()
+    }
+
+    private fun sizeOf(link: Link): Long {
+        Regex("[?&]clen=(\\d+)").find(link.url)?.groupValues?.get(1)?.toLongOrNull()?.let { return it }
+        val req = okhttp3.Request.Builder().url(link.url).header("User-Agent", userAgentFor(clientOf(link.url))).header("Range", "bytes=0-0").build()
         http.newCall(req).execute().use { r ->
             val range = r.header("Content-Range") ?: return r.header("Content-Length")?.toLongOrNull() ?: -1
             return range.substringAfter('/').toLongOrNull() ?: -1
         }
     }
 
-    private fun fetch(url: String, out: File, size: Long, task: Task, progress: (Long) -> Unit) {
+    private fun fetch(link: Link, out: File, size: Long, task: Task, progress: (Long) -> Unit) {
+        AppLog.i(TAG, "Fetching ${if (size > 0) "${size / 1_048_576} MB" else "stream"} (client ${clientOf(link.url)})")
         RandomAccessFile(out, "rw").use { raf ->
             raf.setLength(0)
             var pos = 0L
+            var requestNo = 1
+            var refreshes = 0
             val buf = ByteArray(256 * 1024)
             while (size < 0 || pos < size) {
                 task.check()
                 val endByte = if (size < 0) pos + CHUNK - 1 else minOf(size - 1, pos + CHUNK - 1)
-                val req = okhttp3.Request.Builder().url(url).header("User-Agent", UA).header("Range", "bytes=$pos-$endByte").build()
                 var got = 0L
                 var attempt = 0
                 while (true) {
                     try {
-                        http.newCall(req).execute().use { r ->
+                        http.newCall(pieceRequest(link.url, pos, endByte, requestNo++)).execute().use { r ->
                             if (r.code == 416) return // past the end (unknown size)
-                            if (!r.isSuccessful) throw java.io.IOException("HTTP ${r.code}")
+                            if (!r.isSuccessful) throw HttpError(r.code)
                             val body = r.body ?: throw java.io.IOException("empty body")
                             body.byteStream().use { input ->
                                 while (true) {
@@ -183,10 +242,19 @@ object YouTube {
                         }
                         break
                     } catch (e: java.io.IOException) {
-                        if (++attempt > 4) throw e
-                        AppLog.w(TAG, "Download hiccup at $pos (attempt $attempt): $e")
                         raf.seek(pos)
                         got = 0
+                        // 403/410: this link was cut off or expired. Get a fresh one and carry on from here.
+                        if (e is HttpError && (e.code == 403 || e.code == 410) && refreshes < 8) {
+                            refreshes++
+                            AppLog.w(TAG, "YouTube refused the link at $pos (HTTP ${e.code}); getting a fresh link ($refreshes)")
+                            Thread.sleep(1500)
+                            link.refresh()?.let { link.url = it } ?: throw e
+                            attempt = 0
+                            continue
+                        }
+                        if (++attempt > 4) throw e
+                        AppLog.w(TAG, "Download hiccup at $pos (attempt $attempt): $e")
                         Thread.sleep(1000L shl attempt)
                     }
                 }
@@ -194,8 +262,11 @@ object YouTube {
                 pos += got
                 if (size < 0 && got < CHUNK) break
             }
+            if (size > 0 && pos < size) throw java.io.IOException("Download stopped at $pos of $size bytes")
         }
     }
+
+    private class HttpError(val code: Int) : java.io.IOException("HTTP $code")
 
     /** Joins the separate video and audio downloads into one file (no re-encoding). */
     private fun mux(videoFile: File, audioFile: File, out: File, webm: Boolean) {
