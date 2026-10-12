@@ -45,12 +45,9 @@ object Codecs {
                 var codec: MediaCodec? = null
                 try {
                     codec = MediaCodec.createByCodecName(info.name)
-                    val f = MediaFormat(format)
-                    if (tuned && Build.VERSION.SDK_INT >= 23) {
-                        // Not real-time: decode as fast as possible.
-                        f.setInteger(MediaFormat.KEY_PRIORITY, 1)
-                    }
-                    codec.configure(f, surface, null, 0)
+                    // 1 = not real-time: decode as fast as possible. 0 = real-time (the codec's normal mode).
+                    if (fast) format.setInteger(MediaFormat.KEY_PRIORITY, if (tuned) 1 else 0)
+                    codec.configure(format, surface, null, 0)
                     codec.start()
                     return codec
                 } catch (e: Exception) {
