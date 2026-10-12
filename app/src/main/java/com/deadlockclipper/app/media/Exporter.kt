@@ -469,41 +469,48 @@ object Exporter {
             var inputDone = false
             val bi = MediaCodec.BufferInfo()
             val began = System.currentTimeMillis()
-            while (true) {
+            loop@ while (true) {
                 task.check()
                 if (frames == 0 && System.currentTimeMillis() - began > 60_000) {
                     bad.add(name); throw DecodeRetry("no frames after 60s from $name", 0)
                 }
-                if (!inputDone) {
-                    val i = codec.dequeueInputBuffer(2000)
-                    if (i >= 0) {
-                        val size = ex.readSampleData(codec.getInputBuffer(i)!!, 0)
-                        if (size < 0 || ex.sampleTime > endUs + 2_000_000) {
-                            codec.queueInputBuffer(i, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            inputDone = true
-                        } else {
-                            codec.queueInputBuffer(i, 0, size, ex.sampleTime, 0)
-                            ex.advance()
-                        }
+                while (!inputDone) {
+                    val i = codec.dequeueInputBuffer(0)
+                    if (i < 0) break
+                    val size = ex.readSampleData(codec.getInputBuffer(i)!!, 0)
+                    if (size < 0 || ex.sampleTime > endUs + 2_000_000) {
+                        codec.queueInputBuffer(i, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        inputDone = true
+                    } else {
+                        codec.queueInputBuffer(i, 0, size, ex.sampleTime, 0)
+                        ex.advance()
                     }
                 }
-                val o = try {
-                    codec.dequeueOutputBuffer(bi, 5000)
+                var o = try {
+                    codec.dequeueOutputBuffer(bi, 3000)
                 } catch (e: IllegalStateException) {
                     bad.add(name); throw DecodeRetry(e.toString(), frames)
                 }
-                if (o < 0) continue
-                val eos = bi.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
-                val pts = bi.presentationTimeUs / 1e6
-                // The clip's frames, at most [fps] per second (sources above 60 fps are thinned out).
-                val take = bi.size > 0 && pts >= start - 1e-4 && pts < end && pts >= nextOut - tol
-                codec.releaseOutputBuffer(o, take)
-                if (take && waiter.await()) {
-                    onFrame(pts)
-                    frames++
-                    nextOut = pts + 1.0 / fps
+                while (o != MediaCodec.INFO_TRY_AGAIN_LATER) {
+                    if (o >= 0) {
+                        val eos = bi.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+                        val pts = bi.presentationTimeUs / 1e6
+                        // The clip's frames, at most [fps] per second (sources above 60 fps are thinned out).
+                        val take = bi.size > 0 && pts >= start - 1e-4 && pts < end && pts >= nextOut - tol
+                        codec.releaseOutputBuffer(o, take)
+                        if (take && waiter.await()) {
+                            onFrame(pts)
+                            frames++
+                            nextOut = pts + 1.0 / fps
+                        }
+                        if (eos || pts >= end) break@loop
+                    }
+                    o = try {
+                        codec.dequeueOutputBuffer(bi, 0)
+                    } catch (e: IllegalStateException) {
+                        bad.add(name); throw DecodeRetry(e.toString(), frames)
+                    }
                 }
-                if (eos || pts >= end) break
             }
             return frames
         } finally {

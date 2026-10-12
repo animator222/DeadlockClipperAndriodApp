@@ -81,7 +81,7 @@ object VisionScan {
         val futures = ArrayList<Future<*>>()
         repeat(nWorkers) {
             active.incrementAndGet()
-            futures.add(pool.submit {
+            futures.add(pool.submit(Runnable {
                 val worker = Worker(context, info, region)
                 try {
                     while (true) {
@@ -95,7 +95,7 @@ object VisionScan {
                             // Probably too many decoders running at once on this phone: let the others go on.
                             if (active.get() > 1) {
                                 AppLog.w(TAG, "No free decoder; continuing with fewer parallel decoders")
-                                return@submit
+                                return@Runnable
                             }
                             throw FriendlyError(
                                 "This phone couldn't decode the video. Try a different recording (H.264 MP4 works best).",
@@ -107,7 +107,7 @@ object VisionScan {
                     active.decrementAndGet()
                     worker.release()
                 }
-            })
+            }))
         }
         pool.shutdown()
         try {
@@ -189,41 +189,45 @@ object VisionScan {
                     if (rows.isEmpty() && System.currentTimeMillis() - began > FIRST_FRAME_TIMEOUT_MS) {
                         throw DecoderFailed("no frames after ${FIRST_FRAME_TIMEOUT_MS / 1000}s", name)
                     }
-                    if (!inputDone) {
-                        val i = codec.dequeueInputBuffer(2000)
-                        if (i >= 0) {
-                            val size = ex.readSampleData(codec.getInputBuffer(i)!!, 0)
-                            if (size < 0 || ex.sampleTime > endUs + 2_000_000) {
-                                codec.queueInputBuffer(i, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                                inputDone = true
-                            } else {
-                                codec.queueInputBuffer(i, 0, size, ex.sampleTime, 0)
-                                ex.advance()
-                            }
-                        }
-                    }
-                    val o = codec.dequeueOutputBuffer(bi, 5000)
-                    if (o < 0) continue
-                    val eos = bi.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
-                    val pts = bi.presentationTimeUs / 1e6
-                    val take = bi.size > 0 && pts >= nextT - half && nextT < end && pts < end + 1.0
-                    codec.releaseOutputBuffer(o, take)
-                    if (take) {
-                        if (waiter.await()) {
-                            val row = analyseFrame()
-                            // ffmpeg's fps filter repeats a frame if the video skipped (variable frame rate).
-                            while (nextT <= pts + half && nextT < end) {
-                                rows.add(floatArrayOf(nextT.toFloat(), row[0], row[1], row[2], row[3], row[4], row[5]))
-                                keepCrop(crops, nextT, row)
-                                nextT += step
-                                onFrame()
-                            }
+                    // Feed everything the decoder will take, then handle every frame it has ready.
+                    while (!inputDone) {
+                        val i = codec.dequeueInputBuffer(0)
+                        if (i < 0) break
+                        val size = ex.readSampleData(codec.getInputBuffer(i)!!, 0)
+                        if (size < 0 || ex.sampleTime > endUs + 2_000_000) {
+                            codec.queueInputBuffer(i, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            inputDone = true
                         } else {
-                            missed++
-                            nextT += step
+                            codec.queueInputBuffer(i, 0, size, ex.sampleTime, 0)
+                            ex.advance()
                         }
                     }
-                    if (eos || pts >= end || nextT >= end) break@loop
+                    var o = codec.dequeueOutputBuffer(bi, 3000)
+                    while (o != MediaCodec.INFO_TRY_AGAIN_LATER) {
+                        if (o >= 0) {
+                            val eos = bi.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+                            val pts = bi.presentationTimeUs / 1e6
+                            val take = bi.size > 0 && pts >= nextT - half && nextT < end && pts < end + 1.0
+                            codec.releaseOutputBuffer(o, take)
+                            if (take) {
+                                if (waiter.await()) {
+                                    val row = analyseFrame()
+                                    // ffmpeg's fps filter repeats a frame if the video skipped (variable frame rate).
+                                    while (nextT <= pts + half && nextT < end) {
+                                        rows.add(floatArrayOf(nextT.toFloat(), row[0], row[1], row[2], row[3], row[4], row[5]))
+                                        keepCrop(crops, nextT, row)
+                                        nextT += step
+                                        onFrame()
+                                    }
+                                } else {
+                                    missed++
+                                    nextT += step
+                                }
+                            }
+                            if (eos || pts >= end || nextT >= end) break@loop
+                        }
+                        o = codec.dequeueOutputBuffer(bi, 0)
+                    }
                 }
                 if (missed > 0) AppLog.w(TAG, "$missed sampled frames were not delivered by the decoder at %.0fs".format(start))
                 if (rows.isEmpty() && end - start > 1) throw DecoderFailed("no frames decoded for %.1f-%.1f".format(start, end), name)

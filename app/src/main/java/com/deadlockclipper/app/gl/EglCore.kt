@@ -30,7 +30,7 @@ class EglCore {
         var ok = EGL14.eglChooseConfig(display, attribs, 0, configs, 0, 1, num, 0) && num[0] > 0
         if (!ok) {
             // Some drivers don't offer "recordable" configs together with pbuffers; try without.
-            val plain = attribs.copyOf().also { it[it.indexOf(EGL_RECORDABLE_ANDROID) + 1] = EGL14.EGL_DONT_CARE }
+            val plain = attribs.copyOf().also { it[it.indexOf(EGL_RECORDABLE_ANDROID) + 1] = -1 } // EGL_DONT_CARE
             ok = EGL14.eglChooseConfig(display, plain, 0, configs, 0, 1, num, 0) && num[0] > 0
         }
         if (!ok) throw RuntimeException("No suitable EGL config")

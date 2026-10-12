@@ -411,7 +411,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             error = ErrorInfo("Clip ${bad.joinToString(", ")} must be between 3 and 60 seconds long.", "")
             return
         }
-        val s = settings
+        val s = settings.validate()
+        settings = s
+        saveSettings()
         runJob("Exporting clips", Screen.Review, work = { t ->
             Exporter.exportClips(ctx, paths, v, chosen.map { it.clip }, s, t)
         }) { r ->

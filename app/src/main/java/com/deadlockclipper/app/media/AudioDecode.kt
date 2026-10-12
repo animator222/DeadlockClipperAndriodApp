@@ -36,33 +36,36 @@ object AudioDecode {
             var inputDone = false
             var buf = ShortArray(8192)
             var idle = 0
-            while (true) {
+            outer@ while (true) {
                 task.check()
-                if (!inputDone) {
-                    val i = codec.dequeueInputBuffer(5000)
-                    if (i >= 0) {
-                        val input = codec.getInputBuffer(i)!!
-                        val size = ex.readSampleData(input, 0)
-                        if (size < 0 || ex.sampleTime > endUs) {
-                            codec.queueInputBuffer(i, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            inputDone = true
-                        } else {
-                            codec.queueInputBuffer(i, 0, size, ex.sampleTime, 0)
-                            ex.advance()
-                        }
+                // Feed everything the decoder will take, then take everything it has ready.
+                while (!inputDone) {
+                    val i = codec.dequeueInputBuffer(0)
+                    if (i < 0) break
+                    val input = codec.getInputBuffer(i)!!
+                    val size = ex.readSampleData(input, 0)
+                    if (size < 0 || ex.sampleTime > endUs) {
+                        codec.queueInputBuffer(i, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        inputDone = true
+                    } else {
+                        codec.queueInputBuffer(i, 0, size, ex.sampleTime, 0)
+                        ex.advance()
                     }
                 }
-                val o = codec.dequeueOutputBuffer(info, 5000)
-                if (o == MediaCodec.INFO_TRY_AGAIN_LATER && inputDone && ++idle > 600) break // decoder never signalled the end
-                when {
-                    o == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                var o = codec.dequeueOutputBuffer(info, 2000)
+                if (o == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                    if (inputDone && ++idle > 1500) break // decoder never signalled the end
+                    continue
+                }
+                idle = 0
+                while (o != MediaCodec.INFO_TRY_AGAIN_LATER) {
+                    if (o == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                         val of = codec.outputFormat
                         channels = of.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
                         rate = of.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                         floatPcm = of.containsKey(MediaFormat.KEY_PCM_ENCODING) &&
                             of.getInteger(MediaFormat.KEY_PCM_ENCODING) == AudioFormat.ENCODING_PCM_FLOAT
-                    }
-                    o >= 0 -> {
+                    } else if (o >= 0) {
                         val out = codec.getOutputBuffer(o)
                         if (out != null && info.size > 0) {
                             out.position(info.offset)
@@ -83,9 +86,10 @@ object AudioDecode {
                             onPcm(buf, n, channels, rate, info.presentationTimeUs)
                         }
                         codec.releaseOutputBuffer(o, false)
-                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
-                        if (info.presentationTimeUs > endUs + 500_000) break
+                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break@outer
+                        if (info.presentationTimeUs > endUs + 500_000) break@outer
                     }
+                    o = codec.dequeueOutputBuffer(info, 0)
                 }
             }
         } finally {

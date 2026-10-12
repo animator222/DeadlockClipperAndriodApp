@@ -33,6 +33,9 @@ fun AppRoot(vm: AppViewModel, activity: Activity) {
         val context = LocalContext.current
         val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
         LaunchedEffect(Unit) {
+            val prefs = context.getSharedPreferences("app", android.content.Context.MODE_PRIVATE)
+            if (prefs.getBoolean("asked_permissions", false)) return@LaunchedEffect
+            prefs.edit().putBoolean("asked_permissions", true).apply()
             val wanted = buildList {
                 if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS) // progress of long scans
                 if (Build.VERSION.SDK_INT < 29) add(Manifest.permission.WRITE_EXTERNAL_STORAGE) // saving clips

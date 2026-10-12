@@ -65,7 +65,7 @@ object Gallery {
             return FileProvider.getUriForFile(context, "${context.packageName}.files", dest)
         } catch (e: Exception) {
             throw FriendlyError(
-                "Couldn't save the clip to ${describe(folder)}. Is the phone's storage full?",
+                "Couldn't save the clip to ${describe(folder)}. Is the phone's storage full (or, on Android 8/9, was the storage permission denied)?",
                 AppLog.stackTrace(e),
             )
         }
