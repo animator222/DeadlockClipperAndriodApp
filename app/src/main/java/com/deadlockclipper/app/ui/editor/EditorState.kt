@@ -42,7 +42,7 @@ class EditorState(val info: VideoInfo, target: EditorTarget) {
 
     val current: Layer? get() = comp.layers.getOrNull(sel)
 
-    fun setComp(c: Comp) {
+    fun changeComp(c: Comp) {
         comp = c
         dirty = true
         if (sel >= c.layers.size) sel = c.layers.size - 1
@@ -52,7 +52,7 @@ class EditorState(val info: VideoInfo, target: EditorTarget) {
         val layers = comp.layers.toMutableList()
         if (i !in layers.indices) return
         layers[i] = f(layers[i])
-        setComp(comp.copy(layers = layers))
+        changeComp(comp.copy(layers = layers))
     }
 
     fun updateCurrent(f: (Layer) -> Layer) = update(sel, f)
@@ -75,13 +75,13 @@ class EditorState(val info: VideoInfo, target: EditorTarget) {
             2 -> "Items"
             else -> "Video $n"
         }
-        setComp(comp.copy(layers = comp.layers + Composition.newVideoLayer(info, name)))
+        changeComp(comp.copy(layers = comp.layers + Composition.newVideoLayer(info, name)))
         sel = comp.layers.size - 1
         setModeChecked("source") // first job: mark which part of the video it shows
     }
 
     fun addText() {
-        setComp(comp.copy(layers = comp.layers + Composition.textLayer()))
+        changeComp(comp.copy(layers = comp.layers + Composition.textLayer()))
         sel = comp.layers.size - 1
         mode = "canvas"
     }
@@ -90,7 +90,7 @@ class EditorState(val info: VideoInfo, target: EditorTarget) {
         val i = sel
         val lay = current ?: return
         if (lay.isVideo && comp.layers.count { it.isVideo } == 1) return // keep at least one video layer
-        setComp(comp.copy(layers = comp.layers.filterIndexed { k, _ -> k != i }))
+        changeComp(comp.copy(layers = comp.layers.filterIndexed { k, _ -> k != i }))
         sel = minOf(i, comp.layers.size - 1)
     }
 
@@ -100,7 +100,7 @@ class EditorState(val info: VideoInfo, target: EditorTarget) {
         else lay.copy(cy = minOf(0.95, lay.cy + 0.05))
         val layers = comp.layers.toMutableList()
         layers.add(sel + 1, dup)
-        setComp(comp.copy(layers = layers))
+        changeComp(comp.copy(layers = layers))
         sel += 1
     }
 
@@ -111,7 +111,7 @@ class EditorState(val info: VideoInfo, target: EditorTarget) {
         if (i !in comp.layers.indices || j !in comp.layers.indices) return
         val layers = comp.layers.toMutableList()
         val t = layers[i]; layers[i] = layers[j]; layers[j] = t
-        setComp(comp.copy(layers = layers))
+        changeComp(comp.copy(layers = layers))
         sel = j
     }
 
