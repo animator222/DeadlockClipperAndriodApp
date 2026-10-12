@@ -4,6 +4,8 @@ import android.graphics.BitmapFactory
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -99,6 +101,7 @@ fun ReviewScreen(vm: AppViewModel) {
     var num by remember { mutableIntStateOf(if (vm.settings.numClips == 0) 5 else vm.settings.numClips) }
     var all by remember { mutableStateOf(vm.settings.numClips == 0) }
     var showDetections by remember { mutableStateOf(false) }
+    var showReport by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val checked = vm.clips.count { it.checked }
 
@@ -134,6 +137,9 @@ fun ReviewScreen(vm: AppViewModel) {
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         SecondaryButton("Select all") { vm.selectAll(true) }
                         SecondaryButton("Select none") { vm.selectAll(false) }
+                        SecondaryButton("Why these clips?") {
+                            if (vm.paths.analysisReport.exists()) showReport = true
+                        }
                         SecondaryButton("See what was detected") {
                             if (vm.detectionsImage() != null) showDetections = true
                             else vm.error = ErrorInfo("Nothing that looked like a kill badge was found in this video.", "")
@@ -154,6 +160,12 @@ fun ReviewScreen(vm: AppViewModel) {
             Spacer(Modifier.weight(1f))
             PrimaryButton("Export $checked of ${vm.clips.size} clip${if (vm.clips.size != 1) "s" else ""}", enabled = checked > 0) { vm.export() }
         }
+    }
+    if (showReport) {
+        TextViewer(
+            vm.paths.analysisReport,
+            "Every kill/assist badge the app saw, whether it counted (and if not, why), and which kills didn't become clips.",
+        ) { showReport = false }
     }
     if (showDetections) {
         vm.detectionsImage()?.let { file ->
@@ -228,6 +240,33 @@ fun ImageViewer(path: String, caption: String, onShare: () -> Unit, onClose: () 
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 8.dp)) {
                 SecondaryButton("Share") { onShare() }
+                Spacer(Modifier.weight(1f))
+                PrimaryButton("Close") { onClose() }
+            }
+        }
+    }
+}
+
+/** A full-screen text file (the analysis report) with Share and Copy. */
+@Composable
+fun TextViewer(file: java.io.File, caption: String, onClose: () -> Unit) {
+    val context = LocalContext.current
+    val text = remember(file) { runCatching { file.readText() }.getOrDefault("") }
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(Modifier.fillMaxSize().background(C.bg).padding(12.dp)) {
+            Title("Why these clips?")
+            Subtle(caption)
+            Spacer(Modifier.height(6.dp))
+            Box(Modifier.weight(1f).fillMaxWidth().background(C.card, RoundedCornerShape(6.dp))) {
+                Text(
+                    text, color = C.text, fontSize = 12.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    modifier = Modifier.fillMaxSize().verticalScroll(androidx.compose.foundation.rememberScrollState())
+                        .horizontalScroll(androidx.compose.foundation.rememberScrollState()).padding(8.dp),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+                SecondaryButton("Share") { shareFile(context, file, "text/plain") }
+                SecondaryButton("Copy") { copyText(context, text) }
                 Spacer(Modifier.weight(1f))
                 PrimaryButton("Close") { onClose() }
             }

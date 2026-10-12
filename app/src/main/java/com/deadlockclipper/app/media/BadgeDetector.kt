@@ -79,8 +79,162 @@ object BadgeDetector {
 
     fun toHsv(bgr: Mat): Mat = Mat().also { Imgproc.cvtColor(bgr, it, Imgproc.COLOR_BGR2HSV) }
 
-    /** Score (0..1) how much the crop looks like the red kill badge, plus its centre (crop px / scale). */
-    fun detect(hsv: Mat, scale: Double, shortSide: Int): Found {
+    // "Redness" maps (red minus the larger of green/blue) of the real KILL and ASSIST badges,
+    // 64 px across. Measured on 120 hand-labelled frames of the user's footage: 0 false hits.
+    private var templates: List<Mat> = emptyList()
+    private const val TEMPLATE_DIAM = 64.0
+    private val TEMPLATE_SCALES = doubleArrayOf(0.6, 0.75, 0.9, 1.05, 1.2) // badge size relative to the expected size
+    private const val MATCH_MIN = 0.65
+    private const val RING_MIN = 0.6
+    private const val TEXT_MIN = 0.05
+    private const val TEXT_MAX = 0.45
+
+    fun init(assets: android.content.res.AssetManager) {
+        templates = listOf("assist", "kill").map { n ->
+            val bytes = assets.open("badge_templates/$n.png").use { it.readBytes() }
+            val gray = Imgcodecs.imdecode(org.opencv.core.MatOfByte(*bytes), Imgcodecs.IMREAD_GRAYSCALE)
+            Mat().also { gray.convertTo(it, CvType.CV_32F, 1.0 / 255.0); gray.release() }
+        }
+    }
+
+    /** red minus the larger of green/blue, 0..1 (float). */
+    private fun redness(bgr: Mat, p: Pool): Mat {
+        val ch = ArrayList<Mat>()
+        Core.split(bgr, ch)
+        ch.forEach { p.keep(it) }
+        val b = p.mat(); val g = p.mat(); val r = p.mat()
+        ch[0].convertTo(b, CvType.CV_32F); ch[1].convertTo(g, CvType.CV_32F); ch[2].convertTo(r, CvType.CV_32F)
+        val gb = p.mat()
+        Core.max(g, b, gb)
+        val out = p.mat()
+        Core.subtract(r, gb, out)
+        Imgproc.threshold(out, out, 0.0, 0.0, Imgproc.THRESH_TOZERO)
+        Core.multiply(out, Scalar(1.0 / 255.0), out)
+        return out
+    }
+
+    /**
+     * The current (2026) badge: a red splash ring with KILL/ASSIST and the souls amount inside.
+     * Template matching on "redness" finds the shape; the red ring and the text inside confirm it.
+     * Returns the score and the centre in crop pixels.
+     */
+    private fun templateBadge(crop: Mat, d0: Double): Found {
+        if (templates.isEmpty()) return NONE
+        val p = Pool()
+        try {
+            // Search at half resolution (4x faster); the badge is still ~30+ px there.
+            val small = p.mat()
+            Imgproc.resize(crop, small, Size((crop.cols() / 2).toDouble(), (crop.rows() / 2).toDouble()), 0.0, 0.0, Imgproc.INTER_AREA)
+            val redMap = redness(small, p)
+            var bestMatch = -1.0
+            var bx = 0.0
+            var by = 0.0
+            var bd = 0.0
+            for (k in TEMPLATE_SCALES) {
+                val diam = d0 * k / 2
+                val sized = templates.map { t ->
+                    p.mat().also { Imgproc.resize(t, it, Size(), diam / TEMPLATE_DIAM, diam / TEMPLATE_DIAM, Imgproc.INTER_AREA) }
+                }
+                val th = sized[0].rows()
+                val tw = sized[0].cols()
+                if (th < 8 || th >= redMap.rows() || tw >= redMap.cols()) continue
+                // Flat areas give meaningless scores: ignore places with almost no variation.
+                val mean = p.mat()
+                Imgproc.blur(redMap, mean, Size(tw.toDouble(), th.toDouble()))
+                val sq = p.mat()
+                Core.multiply(redMap, redMap, sq)
+                val meanSq = p.mat()
+                Imgproc.blur(sq, meanSq, Size(tw.toDouble(), th.toDouble()))
+                val var2 = p.mat()
+                Core.multiply(mean, mean, var2)
+                Core.subtract(meanSq, var2, var2)
+                Imgproc.threshold(var2, var2, 0.0, 0.0, Imgproc.THRESH_TOZERO)
+                val std = p.mat()
+                Core.sqrt(var2, std)
+                for (tt in sized) {
+                    val th2 = tt.rows()
+                    val tw2 = tt.cols()
+                    val res = p.mat()
+                    Imgproc.matchTemplate(redMap, tt, res, Imgproc.TM_CCOEFF_NORMED)
+                    val rows = minOf(res.rows(), std.rows() - th2 / 2)
+                    val cols = minOf(res.cols(), std.cols() - tw2 / 2)
+                    if (rows <= 0 || cols <= 0) continue
+                    val sd = p.keep(std.submat(th2 / 2, th2 / 2 + rows, tw2 / 2, tw2 / 2 + cols))
+                    val r = p.keep(res.submat(0, rows, 0, cols).clone())
+                    Core.patchNaNs(r, -1.0)
+                    val flat = p.mat()
+                    Core.compare(sd, Scalar(0.06), flat, Core.CMP_LE)
+                    r.setTo(Scalar(-1.0), flat)
+                    val mm = Core.minMaxLoc(r)
+                    if (mm.maxVal > bestMatch) {
+                        bestMatch = mm.maxVal
+                        bx = (mm.maxLoc.x + tw2 / 2.0) * 2
+                        by = (mm.maxLoc.y + th2 / 2.0) * 2
+                        bd = diam * 2
+                    }
+                }
+            }
+            if (bestMatch < 0.3) return Found(maxOf(0.0, bestMatch) * 0.5, -1.0, -1.0)
+
+            // Confirm: a red ring around the centre, and text (bright, not red) inside it.
+            val x0 = maxOf(0.0, bx - bd).toInt()
+            val x1 = minOf(crop.cols().toDouble(), bx + bd).toInt()
+            val y0 = maxOf(0.0, by - bd).toInt()
+            val y1 = minOf(crop.rows().toDouble(), by + bd).toInt()
+            if (x1 <= x0 || y1 <= y0) return Found(minOf(0.45, bestMatch * 0.5), bx, by)
+            val roi = p.keep(crop.submat(y0, y1, x0, x1))
+            val hsv = p.mat()
+            Imgproc.cvtColor(roi, hsv, Imgproc.COLOR_BGR2HSV)
+            val w = x1 - x0
+            val h = y1 - y0
+            val px = ByteArray(w * h * 3)
+            hsv.get(0, 0, px)
+            val red = BooleanArray(w * h)
+            val text = BooleanArray(w * h)
+            for (i in 0 until w * h) {
+                val hh = px[i * 3].toInt() and 0xFF
+                val ss = px[i * 3 + 1].toInt() and 0xFF
+                val vv = px[i * 3 + 2].toInt() and 0xFF
+                val redHue = hh <= 10 || hh >= 170
+                red[i] = redHue && ss >= 100 && vv >= 60
+                text[i] = vv >= 150 && !(redHue && ss >= 90)
+            }
+            var ringRed = 0.0
+            var innerText = 0.0
+            for (k in TEMPLATE_SCALES) { // the exact size is unknown: use the one with the clearest ring
+                val dd = d0 * k
+                var ringN = 0; var ringR = 0; var innN = 0; var innT = 0
+                for (yy in 0 until h) for (xx in 0 until w) {
+                    val r = Math.hypot(xx + x0 - bx, yy + y0 - by)
+                    val i = yy * w + xx
+                    if (r > 0.32 * dd && r <= 0.5 * dd) {
+                        ringN++; if (red[i]) ringR++
+                    } else if (r <= 0.32 * dd) {
+                        innN++; if (text[i]) innT++
+                    }
+                }
+                if (ringN > 0 && innN > 0 && ringR.toDouble() / ringN > ringRed) {
+                    ringRed = ringR.toDouble() / ringN
+                    innerText = innT.toDouble() / innN
+                }
+            }
+            val ok = bestMatch >= MATCH_MIN && ringRed >= RING_MIN && innerText in TEXT_MIN..TEXT_MAX
+            val score = if (ok) 0.5 + 0.5 * min(1.0, (bestMatch - MATCH_MIN) / 0.3) else min(0.45, bestMatch * 0.5)
+            return Found(score, bx, by)
+        } finally {
+            p.release()
+        }
+    }
+
+    /**
+     * Score (0..1, >= 0.5 counts) how much the crop shows the red kill/assist badge, plus its
+     * centre (crop px / scale). Two checks: the current badge (template match), and the older
+     * plain red circle with white KILL / KILL ASSIST text (for older recordings).
+     */
+    fun detect(bgr: Mat, hsv: Mat, scale: Double, shortSide: Int): Found {
+        val d0 = VisionConst.BADGE_DIAMETER_1080P * (shortSide / 1080.0) * scale
+        val t = templateBadge(bgr, d0)
+        var best = if (t.x >= 0) Found(t.score, t.x / scale, t.y / scale) else t
         val p = Pool()
         try {
             val red = p.mat()
@@ -94,13 +248,9 @@ object BadgeDetector {
             val hier = p.mat()
             Imgproc.findContours(red.clone().also { p.keep(it) }, contours, hier, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
             contours.forEach { p.keep(it) }
-
-            val d0 = VisionConst.BADGE_DIAMETER_1080P * (shortSide / 1080.0) * scale
             val minArea = PI / 4 * (0.45 * d0) * (0.45 * d0)
             val maxArea = PI / 4 * (1.8 * d0) * (1.8 * d0)
             val light = inRange(hsv, Scalar(0.0, 0.0, 170.0), Scalar(180.0, 90.0, 255.0), p.mat()) // white text
-
-            var best = NONE
             for ((idx, c) in contours.withIndex()) {
                 val area = Imgproc.contourArea(c)
                 if (area < minArea || area > maxArea) continue
@@ -120,16 +270,6 @@ object BadgeDetector {
                 val score = min(1.0, circularity) * min(1.0, textFrac / 0.04)
                 if (score > best.score) best = Found(score, center.x / scale, center.y / scale)
             }
-            // In vertical layouts the badge can be about half its normal size: try smaller sizes too.
-            var souls = NONE
-            for (k in doubleArrayOf(1.0, 0.75, 0.55)) {
-                val f = soulsBadge(hsv, d0 * k)
-                if (f.score > souls.score) souls = f
-            }
-            val touching = if (best.score < 0.5) touchingBadge(red, light, d0, minArea) else NONE
-            for (f in listOf(souls, touching)) {
-                if (f.score > best.score) best = Found(f.score, f.x / scale, f.y / scale)
-            }
             return best
         } finally {
             p.release()
@@ -137,114 +277,10 @@ object BadgeDetector {
     }
 
     /**
-     * The current (2026) badge: a red splash with KILL/ASSIST and, below the centre, the souls
-     * you earned in mint-green ("$186"). Mint-green text of that size, surrounded by red on all
-     * sides, is very particular to this badge.
+     * Badge check of a whole frame (the "Kill badge area" screen). Returns the score and the
+     * badge centre as fractions of the frame (-1 if none).
      */
-    private fun soulsBadge(hsv: Mat, d: Double): Found {
-        val p = Pool()
-        try {
-            val mint = inRange(hsv, Scalar(35.0, 40.0, 140.0), Scalar(100.0, 255.0, 255.0), p.mat())
-            // Heavy compression (e.g. YouTube downloads) washes the mint out.
-            val white = inRange(hsv, Scalar(0.0, 0.0, 170.0), Scalar(180.0, 70.0, 255.0), p.mat())
-            val green = p.mat()
-            Core.bitwise_or(mint, white, green)
-            val red = inRange(hsv, Scalar(0.0, 100.0, 60.0), Scalar(10.0, 255.0, 255.0), p.mat())
-            val red2 = inRange(hsv, Scalar(170.0, 100.0, 60.0), Scalar(180.0, 255.0, 255.0), p.mat())
-            Core.bitwise_or(red, red2, red)
-            val kernel = p.keep(Mat.ones(3, max(3, (d * 0.08).toInt()), CvType.CV_8U))
-            val merged = p.mat()
-            Imgproc.dilate(green, merged, kernel) // join the digits
-            val labels = p.mat()
-            val stats = p.mat()
-            val centroids = p.mat()
-            val n = Imgproc.connectedComponentsWithStats(merged, labels, stats, centroids)
-            val rows = red.rows()
-            val cols = red.cols()
-            var best = NONE
-            for (i in 1 until n) {
-                val x = stats.get(i, Imgproc.CC_STAT_LEFT)[0].toInt()
-                val y = stats.get(i, Imgproc.CC_STAT_TOP)[0].toInt()
-                val w = stats.get(i, Imgproc.CC_STAT_WIDTH)[0].toInt()
-                val h = stats.get(i, Imgproc.CC_STAT_HEIGHT)[0].toInt()
-                // Real souls text: about 0.42 x 0.13 of the badge size, about a third filled.
-                if (w < 0.30 * d || w > 0.62 * d || h < 0.08 * d || h > 0.22 * d) continue
-                val roi = green.submat(Rect(x, y, w, h))
-                val density = meanOf(roi)
-                roi.release()
-                if (density < 0.22 || density > 0.55) continue
-                val cx = x + w / 2.0
-                val cy = y + h / 2.0
-                fun redShare(ax0: Double, ax1: Double, ay0: Double, ay1: Double): Double {
-                    val x0 = max(0.0, cx + ax0 * d).toInt()
-                    val x1 = min(cols.toDouble(), cx + ax1 * d).toInt()
-                    val y0 = max(0.0, cy + ay0 * d).toInt()
-                    val y1 = min(rows.toDouble(), cy + ay1 * d).toInt()
-                    if (x1 <= x0 || y1 <= y0) return 0.0
-                    val sub = red.submat(Rect(x0, y0, x1 - x0, y1 - y0))
-                    return meanOf(sub).also { sub.release() }
-                }
-                val around = listOf(
-                    redShare(-0.6, -0.3, -0.4, 0.15), redShare(0.3, 0.6, -0.4, 0.15),
-                    redShare(-0.3, 0.3, -0.62, -0.38), redShare(-0.3, 0.3, 0.12, 0.35),
-                ).sorted()
-                if (around[0] < 0.08 || around[1] < 0.25) continue
-                val score = min(1.0, 0.55 + around[1])
-                if (score > best.score) best = Found(score, cx, cy - 0.12 * d) // the badge's centre is just above the souls
-            }
-            return best
-        } finally {
-            p.release()
-        }
-    }
-
-    /**
-     * A badge whose red merges with something red next to it (e.g. a red hat just below it):
-     * the blob isn't round, but it contains a solid red disk of badge size with text in the middle.
-     */
-    private fun touchingBadge(red: Mat, light: Mat, d0: Double, minArea: Double): Found {
-        val p = Pool()
-        try {
-            val nearRed = p.mat()
-            Imgproc.dilate(red, nearRed, p.keep(Mat.ones(9, 9, CvType.CV_8U)))
-            val lightNear = p.mat()
-            Core.bitwise_and(light, nearRed, lightNear)
-            val solid = p.mat()
-            Core.bitwise_or(red, lightNear, solid) // fill the text holes so the badge reads as one disk
-            Imgproc.morphologyEx(solid, solid, Imgproc.MORPH_CLOSE, p.keep(Mat.ones(5, 5, CvType.CV_8U)))
-            val contours = ArrayList<MatOfPoint>()
-            Imgproc.findContours(solid.clone().also { p.keep(it) }, contours, p.mat(), Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
-            contours.forEach { p.keep(it) }
-            var best = NONE
-            for ((idx, c) in contours.withIndex()) {
-                val area = Imgproc.contourArea(c)
-                if (area < minArea) continue
-                val mask = p.keep(Mat.zeros(solid.size(), CvType.CV_8U))
-                Imgproc.drawContours(mask, contours, idx, Scalar(255.0), -1)
-                val dist = p.mat()
-                Imgproc.distanceTransform(mask, dist, Imgproc.DIST_L2, 5)
-                val mm = Core.minMaxLoc(dist)
-                val r = mm.maxVal
-                val x = mm.maxLoc.x
-                val y = mm.maxLoc.y
-                if (r < 0.45 * d0 / 2 || r > 1.8 * d0 / 2) continue
-                if (area > 3.0 * PI * r * r) continue // a big red area (wall, explosion), not a badge
-                val inner = p.keep(Mat.zeros(solid.size(), CvType.CV_8U))
-                Imgproc.circle(inner, Point(x.toInt().toDouble(), y.toInt().toDouble()), max(2, (r * 0.75).toInt()), Scalar(255.0), -1)
-                val textFrac = meanInside(light, inner, p)
-                val redFrac = meanInside(red, inner, p)
-                if (textFrac < 0.03 || textFrac > 0.5 || redFrac < 0.4) continue
-                val score = 0.9 * min(1.0, textFrac / 0.06)
-                if (score > best.score) best = Found(score, x, y)
-            }
-            return best
-        } finally {
-            p.release()
-        }
-    }
-
-    /** Badge check of a whole frame (the "Kill badge area" screen). */
-    fun checkFrame(bgr: Mat, region: List<Double>): Double {
+    fun checkFrame(bgr: Mat, region: List<Double>): Found {
         val w = bgr.cols()
         val h = bgr.rows()
         val (x, y, rw, rh) = region
@@ -258,7 +294,9 @@ object BadgeDetector {
         Imgproc.resize(crop, resized, Size(VisionConst.CROP_W.toDouble(), max(2, (crop.rows() * scale).toInt()).toDouble()), 0.0, 0.0, Imgproc.INTER_AREA)
         val hsv = toHsv(resized)
         try {
-            return detect(hsv, scale, min(w, h)).score
+            val f = detect(resized, hsv, scale, min(w, h))
+            if (f.x < 0) return Found(f.score, -1.0, -1.0)
+            return Found(f.score, (x0 + f.x) / w, (y0 + f.y) / h)
         } finally {
             crop.release(); resized.release(); hsv.release()
         }

@@ -3,6 +3,8 @@ package com.deadlockclipper.app.ui.editor
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
@@ -25,16 +27,16 @@ import com.deadlockclipper.core.fmtTime
 
 /** Filmstrip with draggable start/end handles and a playhead. Tap anywhere to jump there. */
 @Composable
-fun Timeline(st: EditorState, thumbs: List<ImageBitmap>, onSeek: (Double) -> Unit) {
+fun Timeline(st: EditorState, thumbs: List<ImageBitmap>, height: androidx.compose.ui.unit.Dp = 96.dp, onSeek: (Double) -> Unit) {
     val density = LocalDensity.current
-    val stripH = with(density) { 64.dp.toPx() }
+    val stripH = with(density) { (height - 16.dp).toPx() }
     val handleW = with(density) { 14.dp.toPx() }
     val touch = with(density) { 14.dp.toPx() }
-    val textPx = with(density) { 11.dp.toPx() }
+    val textPx = with(density) { 10.dp.toPx() }
     val seek by rememberUpdatedState(onSeek)
 
     Canvas(
-        Modifier.fillMaxWidth().height(96.dp).pointerInput(st) {
+        Modifier.fillMaxWidth().height(height).pointerInput(st) {
             awaitEachGesture {
                 val down = awaitFirstDown()
                 val w = size.width.toFloat()
@@ -65,12 +67,30 @@ fun Timeline(st: EditorState, thumbs: List<ImageBitmap>, onSeek: (Double) -> Uni
                 }
                 apply(px)
                 down.consume()
+                var pinched = false
                 while (true) {
                     val e = awaitPointerEvent()
-                    val c = e.changes.firstOrNull() ?: break
-                    if (!c.pressed) break
-                    apply(c.position.x)
-                    c.consume()
+                    val pressed = e.changes.filter { it.pressed }
+                    if (pressed.isEmpty()) break
+                    if (pressed.size >= 2) {
+                        // Pinch zooms the timeline in/out around the fingers.
+                        pinched = true
+                        val zoom = e.calculateZoom()
+                        if (zoom != 1f) {
+                            val w = size.width.toFloat()
+                            val center = t(e.calculateCentroid().x)
+                            val frac = (center - st.v0) / maxOf(1e-6, st.v1 - st.v0)
+                            val span = ((st.v1 - st.v0) / zoom).coerceIn(10.0, maxOf(10.0, st.info.duration))
+                            val v0 = (center - frac * span).coerceIn(0.0, maxOf(0.0, st.info.duration - span))
+                            st.v0 = v0
+                            st.v1 = minOf(st.info.duration, v0 + span)
+                            if (w <= 0f) break
+                        }
+                        e.changes.forEach { it.consume() }
+                    } else if (!pinched) {
+                        apply(pressed[0].position.x)
+                        pressed[0].consume()
+                    }
                 }
             }
         },
@@ -102,7 +122,7 @@ fun Timeline(st: EditorState, thumbs: List<ImageBitmap>, onSeek: (Double) -> Uni
         }
         // time ruler
         val span = st.v1 - st.v0
-        val step = listOf(1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800).firstOrNull { span / it <= 8 } ?: 3600
+        val step = listOf(1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600).firstOrNull { span / it <= 6 } ?: 7200
         val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             this.color = 0xFF9A9CA5.toInt(); textSize = textPx; textAlign = android.graphics.Paint.Align.CENTER
         }

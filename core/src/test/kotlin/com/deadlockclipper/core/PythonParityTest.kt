@@ -64,14 +64,16 @@ class PythonParityTest {
                 val fights = e["fights"]!!.jsonArray
                 assertEquals("$where fights", fights.size, events.fights.size)
                 assertEquals("$where spikes", e["nspikes"]!!.jsonPrimitive.int, events.spikes.size)
+                assertEquals("$where sightings", e["sightings"]!!.jsonArray.map { it.jsonPrimitive.content }, events.sightings)
                 val clips = Highlights.pickClips(events, s, duration)
+                assertEquals("$where clip notes", e["clip_notes"]!!.jsonArray.map { it.jsonPrimitive.content }, events.clipNotes)
                 val expected = e["clips"]!!.jsonArray
                 assertEquals("$where clip count", expected.size, clips.size)
                 expected.forEachIndexed { k, x ->
                     val arr = x.jsonArray
                     close(clips[k].start, arr[0].jsonPrimitive.double, 1e-6, "$where clip $k start")
                     close(clips[k].end, arr[1].jsonPrimitive.double, 1e-6, "$where clip $k end")
-                    close(clips[k].score, arr[2].jsonPrimitive.double, 0.051, "$where clip $k score")
+                    close(clips[k].score, arr[2].jsonPrimitive.double, 1e-9, "$where clip $k score")
                     assertEquals("$where clip $k reasons", arr[3].jsonArray.map { it.jsonPrimitive.content }, clips[k].reasons)
                     clipsChecked++
                 }

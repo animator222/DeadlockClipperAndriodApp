@@ -10,6 +10,9 @@ import kotlin.math.abs
  */
 object Highlights {
     const val BADGE_THRESHOLD = 0.5
+    const val SINGLE_FRAME_SCORE = 0.7 // one clear sighting is enough; weaker ones need two frames
+    const val POSITION_TOLERANCE = 80.0 // px (source video): how far sightings of one badge may be apart
+    const val MENU_MIN_SECONDS = 1.5 // the shop panel must be seen this long to count as the shop
     const val MULTIKILL_GAP = 12.0 // takedowns this close together count as a multikill
     const val MOMENT_GAP = 20.0 // kills this close together go into the same clip (if it fits)
     const val ACTION_QUIET_BEFORE = 3.0
@@ -22,37 +25,73 @@ object Highlights {
 
     var debugLog: (String) -> Unit = {}
 
-    fun findTakedowns(v: VisionData): List<Double> {
+    /**
+     * Times the buy menu is open: the pale shop panel seen for at least MENU_MIN_SECONDS.
+     * (A single pale frame - a bright wall, sky or flash - is not the shop.)
+     */
+    private fun menuTimes(v: VisionData): FloatArray {
+        val pale = BooleanArray(v.size) { v.panel[it] >= VisionConst.MENU_PANEL }
+        val keep = BooleanArray(v.size)
+        for (r in Num.runs(pale)) if ((r[1] - r[0]) / FPS >= MENU_MIN_SECONDS) for (i in r[0] until r[1]) keep[i] = true
+        return v.t.indices.filter { keep[it] }.map { v.t[it] }.toFloatArray()
+    }
+
+    /**
+     * Turn per-frame badge scores into takedown times. Every badge sighting and what happened
+     * to it is added to [report] when given.
+     */
+    fun findTakedowns(v: VisionData, report: MutableList<String>? = null): List<Double> {
         val t = v.t
         val score = v.badge
-        // Times the buy menu is open. Badges a few seconds either side of an open menu are ignored.
-        val menuTimes = t.indices.filter { v.panel[it] >= VisionConst.MENU_PANEL }.map { t[it] }.toFloatArray()
+        // Tooltips can hide part of the shop for a moment, so badges a few seconds either side of a
+        // clearly open shop are ignored too.
+        val menuTimes = menuTimes(v)
         val seen = BooleanArray(t.size) { score[it] >= BADGE_THRESHOLD }
-        // Bridge flickers: the badge can be missed for a frame or two (explosions, overlap).
+        // Bridge flickers: the badge can be missed for a few frames (explosions, effects).
         for (r in Num.runs(BooleanArray(seen.size) { !seen[it] })) {
             val (a, b) = r[0] to r[1]
-            if (0 < a && b < seen.size && b - a <= 2) for (i in a until b) seen[i] = true
+            if (0 < a && b < seen.size && b - a <= 3) for (i in a until b) seen[i] = true
+        }
+        fun note(time: Float, text: String) {
+            report?.add("${fmtTime(time.toDouble())}  $text")
         }
         val found = ArrayList<Double>()
         for (r in Num.runs(seen)) {
             val (a, b) = r[0] to r[1]
             val seconds = (b - a) / FPS
-            if (b - a < 2) continue // a single frame is usually something else that's red and round
-            if (t[b - 1] - t[a] > seconds + 1) continue // run spans a gap between scanned parts
-            if (seconds > 8) {
-                debugLog("Ignored long red-circle run at %.1fs (%.1fs)".format(t[a], seconds))
+            val hitIdx = (a until b).filter { score[it] >= BADGE_THRESHOLD }
+            val hits = hitIdx.size
+            var best = Float.NEGATIVE_INFINITY
+            for (i in a until b) best = maxOf(best, score[i])
+            if (hits < 2 && best < SINGLE_FRAME_SCORE) {
+                note(t[a], "not counted: seen in only 1 frame (score ${"%.2f".format(best)})")
                 continue
             }
-            val hits = (a until b).filter { score[it] >= BADGE_THRESHOLD }
-            val xs = hits.map { v.bx[it] }
-            val ys = hits.map { v.by[it] }
-            if (xs.isNotEmpty() && (xs.max() - xs.min() > 60 || ys.max() - ys.min() > 60)) continue // the badge stays in place
+            if (t[b - 1] - t[a] > seconds + 1) {
+                note(t[a], "not counted: spans a gap in the scan")
+                continue
+            }
+            if (seconds > 8) {
+                note(t[a], "not counted: stayed on screen ${fmt0(seconds)}s (a real badge disappears within a few seconds)")
+                continue
+            }
+            // The badge stays in place: most sightings must be close to the middle one.
+            val xs = FloatArray(hits) { v.bx[hitIdx[it]] }
+            val ys = FloatArray(hits) { v.by[hitIdx[it]] }
+            val mx = Num.median(xs)
+            val my = Num.median(ys)
+            val near = hitIdx.indices.count { abs(xs[it] - mx) <= POSITION_TOLERANCE && abs(ys[it] - my) <= POSITION_TOLERANCE }
+            if (near.toDouble() / hits < 0.6) {
+                note(t[a], "not counted: the red shape moved around (a real badge stays put)")
+                continue
+            }
             val lo = Num.searchSorted(menuTimes, t[a] - MENU_PAD)
             val hi = Num.searchSorted(menuTimes, t[b - 1] + MENU_PAD)
             if (hi > lo) {
-                debugLog("Ignored badge at %.1fs: buy menu open".format(t[a]))
+                note(t[a], "not counted: buy menu open around this time")
                 continue
             }
+            note(t[a], "COUNTED as a kill/assist ($hits frames, best score ${"%.2f".format(best)})")
             found.add(t[a].toDouble())
         }
         debugLog("Buy menu seen open in ${menuTimes.size} sampled frames")
@@ -112,7 +151,8 @@ object Highlights {
             if (short[i] >= spikeLevel && short[i] >= short[i - 1] && short[i] >= short[i + 1]) spikes.add(i * HOP)
         }
 
-        val events = Events(findTakedowns(analysis.vision), findDeaths(analysis.vision), fights, spikes, threshold, sustained)
+        val sightings = ArrayList<String>()
+        val events = Events(findTakedowns(analysis.vision, sightings), findDeaths(analysis.vision), fights, spikes, threshold, sustained, sightings)
         debugLog(
             "Events: %d takedowns, %d deaths, %d loud fights (threshold %.1f dB), %d spikes".format(
                 events.takedowns.size, events.deaths.size, fights.size, threshold, spikes.size,
@@ -151,7 +191,17 @@ object Highlights {
     /** Stretch a clip over the whole fight around its kills, using the game audio. */
     private fun actionBounds(events: Events, first: Double, last: Double, s: Settings, duration: Double): Pair<Double, Double> {
         val curve = events.sustained
-        val level = maxOf(1.0, 0.5 * events.threshold)
+        // "Action" = at least halfway between this video's normal loudness and the loudness of the
+        // fight around the kill. Relative to each fight, so it works for loud and for heavily
+        // compressed audio (YouTube downloads) alike.
+        val i0 = maxOf(0, ((first - 3) / HOP).toInt())
+        val i1 = minOf(curve.size, ((last + 3) / HOP).toInt() + 1)
+        if (i1 <= i0) return (first - s.preRoll) to (last + s.postRoll)
+        val normal = Num.median(curve)
+        var peak = Float.NEGATIVE_INFINITY
+        for (i in i0 until i1) peak = maxOf(peak, curve[i])
+        if (peak - normal < 0.3) return (first - s.preRoll) to (last + s.postRoll) // the kill isn't audibly louder
+        val level = normal + 0.5 * (peak - normal)
         fun active(t: Double): Boolean {
             val i = (t / HOP).toInt() // truncates toward zero, like Python's int()
             return i >= 0 && i < curve.size && curve[i] > level
@@ -202,6 +252,7 @@ object Highlights {
             if (n > bestMulti) reasons.add("$n kills/assists in this clip")
 
             val (start, end) = actionBounds(events, first, last, s, duration)
+            val action = end - start
             val fight = overlappingFight(events.fights, first - 3, last + 3)
             if (fight != null) {
                 usedFights.add(fight)
@@ -217,6 +268,7 @@ object Highlights {
                 score *= minOf(1.6, 1 + 0.15 * aligned)
                 reasons.add("Kill lines up with an audio spike")
             }
+            reasons.add("Fight about ${fmt0(action)}s" + if (action < s.minLen) " (padded to your ${s.minLen}s minimum)" else "")
             cands.add(Clip(start, end, score, reasons, group.toMutableList(), focus = first))
         }
 
@@ -283,16 +335,33 @@ object Highlights {
     }
 
     fun pickClips(events: Events, s: Settings, duration: Double): List<Clip> {
+        val notes = ArrayList<String>()
+        events.clipNotes = notes
+        fun note(c: Clip, why: String) =
+            notes.add("${fmtTime(c.takedowns.firstOrNull() ?: c.focus)}  ${c.reasons.take(1).joinToString(", ")}: $why")
         var cands = candidates(events, s, duration).map { fitLength(it, s, duration) }
-        if (s.excludeDeaths) cands = cands.mapNotNull { handleDeaths(it, events.deaths, s) }
+        if (s.excludeDeaths) {
+            val kept = ArrayList<Clip>()
+            for (c in cands) {
+                val handled = handleDeaths(c, events.deaths, s)
+                if (handled != null) kept.add(handled)
+                else note(c, "dropped - you die right at the start ('Skip moments where I die' is on)")
+            }
+            cands = kept
+        }
         cands = cands.sortedByDescending { it.score }
         val chosen = ArrayList<Clip>()
         for (c in cands) {
+            if (s.numClips > 0 && chosen.size >= s.numClips) {
+                note(c, "not picked - you asked for ${s.numClips} clips and higher-scoring ones filled them " +
+                    "(score ${fmt0(c.score)}; tick 'All highlights' to get every kill)")
+                continue
+            }
             if (chosen.all { o -> c.end + 1 <= o.start || c.start >= o.end + 1 }) chosen.add(c)
-            if (s.numClips > 0 && chosen.size >= s.numClips) break
+            else note(c, "already inside another clip")
         }
         chosen.sortBy { it.start }
-        for (c in chosen) c.score = Math.round(c.score * 10) / 10.0
+        for (c in chosen) c.score = java.math.BigDecimal(c.score).setScale(1, java.math.RoundingMode.HALF_EVEN).toDouble() // like Python round(x, 1)
         debugLog("Picked ${chosen.size} clips from ${cands.size} candidates")
         return chosen
     }
@@ -309,6 +378,8 @@ class Events(
     val spikes: List<Double>,
     val threshold: Double,
     val sustained: FloatArray,
+    val sightings: List<String> = emptyList(), // every badge sighting and what happened to it
+    var clipNotes: List<String> = emptyList(), // kills that did not become clips, and why
 )
 
 class Clip(

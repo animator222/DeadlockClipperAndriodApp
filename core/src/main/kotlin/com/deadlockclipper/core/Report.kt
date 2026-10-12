@@ -22,6 +22,12 @@ object Report {
             lines.add("   ${fmtTime(f.start)}-${fmtTime(f.end)}  peak ${"%.1f".format(f.peak)} dB  (${"%.0f".format(f.length)}s)")
         }
         lines.add("")
+        lines.add("Every kill/assist badge sighting and what happened to it:")
+        lines.addAll(events.sightings.map { "   $it" }.ifEmpty { listOf("   (none)") })
+        lines.add("")
+        lines.add("Kills that did not become clips, and why:")
+        lines.addAll(events.clipNotes.map { "   $it" }.ifEmpty { listOf("   (none - every counted kill is in a clip)") })
+        lines.add("")
         lines.add("Chosen clips (${clips.size}):")
         clips.forEachIndexed { i, c ->
             lines.add("  %02d. ${fmtTime(c.start)}-${fmtTime(c.end)}  score ${c.score}  ".format(i + 1) + c.reasons.joinToString("; "))

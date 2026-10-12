@@ -4,6 +4,8 @@ import android.net.Uri
 import android.view.Surface
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -91,7 +93,7 @@ fun EditorScreen(vm: AppViewModel, target: EditorTarget) {
     var muted by remember { mutableStateOf(false) }
     var confirmDiscard by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
-    var tab by remember { mutableStateOf("layers") }
+    var tab by remember { mutableStateOf("") } // "" = panels closed: the video gets the room
     var typing by remember { mutableStateOf(false) }
     val thumbs = remember { mutableStateListOf<ImageBitmap>() }
     val focus = remember { FocusRequester() }
@@ -226,65 +228,47 @@ fun EditorScreen(vm: AppViewModel, target: EditorTarget) {
                 true
             },
     ) {
-        val wide = maxWidth > 840.dp
+        // Phones: the preview gets almost all of the screen; the layer and property panels open
+        // over the lower part only when asked for. Tablets get side panels.
+        val tablet = maxWidth > 840.dp && maxHeight > 600.dp
+        val landscape = !tablet && maxWidth > maxHeight
+        val now = { player.currentPosition / 1000.0 }
+        val controls: @Composable () -> Unit = {
+            Transport(st, info.duration, playing, muted, { togglePlay() }, { step(it) }, { frame(it) }, { muted = it })
+            if (!st.template) TrimRow(st, now) { playSelection() }
+            Timeline(st, thumbs, 52.dp) { seek(it) }
+        }
+        val toolbar: @Composable () -> Unit = {
+            ToolBar(st, tab) { tab = if (tab == it) "" else it }
+        }
+        val panel: @Composable () -> Unit = {
+            if (tab == "layers") LayersPanel(st) else PropertiesPanel(st) { typing = it }
+        }
         Column(Modifier.fillMaxSize()) {
-            // ---------------------------------------------------------- top bar
-            Row(
-                Modifier.fillMaxWidth().background(C.edPanel).padding(horizontal = 10.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(if (st.template) "My layout" else "Edit clip ${target.item?.index}", color = Color(0xFFF2F3F7), fontSize = 17.sp, fontWeight = FontWeight.Bold)
-                    val chip = st.chip ?: target.item?.clip?.reasons?.joinToString(" • ")
-                    if (!chip.isNullOrBlank()) Text(chip, color = C.reason, fontSize = 12.sp, maxLines = 1)
-                }
-                EdButton("Cancel") { leave() }
-                EdButton(if (st.template) "Save layout" else "Save", selected = true) { save() }
-                if (!st.template) {
-                    Box {
-                        EdButton("⋮") { menu = true }
-                        DropdownMenu(menu, { menu = false }, Modifier.background(C.edPanel)) {
-                            DropdownMenuItem(text = { Text("★ Save as my layout", color = Color(0xFFE6E8EE)) }, onClick = {
-                                menu = false
-                                vm.saveMyLayout(st.comp.copy(layers = st.comp.layers.filter { it.isVideo }), fromTemplate = false) // text is per clip
-                                st.chip = "★ Saved as my layout"
-                            })
-                            DropdownMenuItem(text = { Text("↻ Apply layout to all clips", color = Color(0xFFE6E8EE)) }, onClick = {
-                                menu = false
-                                vm.applyToAll(st.comp, target.item)
-                                st.chip = "↻ Layout applied to all clips"
-                            })
-                        }
-                    }
-                }
-            }
-
-            if (wide) {
-                Row(Modifier.weight(1f).padding(10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            TopBar(st, target, menu, { menu = it }, { leave() }, { save() }, vm)
+            when {
+                tablet -> Row(Modifier.weight(1f).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Panel(Modifier.width(250.dp).fillMaxHeight()) { LayersPanel(st) }
                     Column(Modifier.weight(1f)) {
-                        StageArea(st, glView, hint, Modifier.weight(1f))
-                        Transport(st, info.duration, playing, muted, { togglePlay() }, { step(it) }, { frame(it) }, { playSelection() }, { muted = it })
-                        Timeline(st, thumbs) { seek(it) }
-                        TrimRow(st) { player.currentPosition / 1000.0 }
+                        StageArea(st, glView, hint, Modifier.weight(1f).fillMaxWidth())
+                        controls()
                     }
                     Panel(Modifier.width(310.dp).fillMaxHeight()) { PropertiesPanel(st) { typing = it } }
                 }
-            } else {
-                Column(Modifier.weight(1f).padding(horizontal = 8.dp)) {
-                    StageArea(st, glView, hint, Modifier.weight(1f).heightIn(min = 200.dp))
-                    Transport(st, info.duration, playing, muted, { togglePlay() }, { step(it) }, { frame(it) }, { playSelection() }, { muted = it })
-                    Timeline(st, thumbs) { seek(it) }
-                    TrimRow(st) { player.currentPosition / 1000.0 }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(vertical = 4.dp)) {
-                        EdButton("Layers", selected = tab == "layers") { tab = if (tab == "layers") "" else "layers" }
-                        EdButton("Properties", selected = tab == "props") { tab = if (tab == "props") "" else "props" }
-                        if (tab.isNotEmpty()) EdButton("▼ Hide") { tab = "" }
+                landscape -> Row(Modifier.weight(1f)) {
+                    StageArea(st, glView, hint, Modifier.weight(1f).fillMaxHeight())
+                    Column(Modifier.width(340.dp).fillMaxHeight().background(C.edPanel).padding(horizontal = 6.dp)) {
+                        controls()
+                        toolbar()
+                        if (tab.isNotEmpty()) Panel(Modifier.weight(1f).fillMaxWidth()) { panel() }
                     }
-                    if (tab.isNotEmpty()) {
-                        Panel(Modifier.fillMaxWidth().height(260.dp)) {
-                            if (tab == "layers") LayersPanel(st) else PropertiesPanel(st) { typing = it }
-                        }
+                }
+                else -> {
+                    StageArea(st, glView, hint, Modifier.weight(1f).fillMaxWidth())
+                    Column(Modifier.fillMaxWidth().background(C.edPanel).padding(horizontal = 6.dp)) {
+                        controls()
+                        if (tab.isNotEmpty()) Panel(Modifier.fillMaxWidth().height(maxHeight * 0.4f)) { panel() }
+                        toolbar()
                     }
                 }
             }
@@ -305,69 +289,122 @@ fun EditorScreen(vm: AppViewModel, target: EditorTarget) {
 @Composable
 private fun Panel(modifier: Modifier, content: @Composable () -> Unit) {
     Column(
-        modifier.background(C.edPanel, RoundedCornerShape(10.dp)).padding(12.dp).verticalScroll(rememberScrollState()),
+        modifier.background(C.edBg, RoundedCornerShape(10.dp)).padding(10.dp).verticalScroll(rememberScrollState()),
     ) { content() }
+}
+
+/** A compact button for the phone layout. */
+@Composable
+fun SmallBtn(text: String, modifier: Modifier = Modifier, selected: Boolean = false, enabled: Boolean = true, onClick: () -> Unit) {
+    Box(
+        modifier.height(34.dp).background(if (selected) C.accent else Color(0xFF1D2130), RoundedCornerShape(7.dp))
+            .clickable(enabled = enabled, onClick = onClick).padding(horizontal = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) { Text(text, color = if (enabled) Color(0xFFE6E8EE) else Color(0xFF666B7A), fontSize = 14.sp, maxLines = 1) }
+}
+
+@Composable
+private fun TopBar(
+    st: EditorState, target: EditorTarget, menu: Boolean, setMenu: (Boolean) -> Unit,
+    leave: () -> Unit, save: () -> Unit, vm: AppViewModel,
+) {
+    Row(
+        Modifier.fillMaxWidth().height(48.dp).background(C.edPanel).padding(horizontal = 6.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        SmallBtn("✕") { leave() }
+        Column(Modifier.weight(1f)) {
+            Text(if (st.template) "My layout" else "Edit clip ${target.item?.index}", color = Color(0xFFF2F3F7), fontSize = 16.sp,
+                fontWeight = FontWeight.Bold, maxLines = 1)
+            val chip = st.chip ?: target.item?.clip?.reasons?.firstOrNull()
+            if (!chip.isNullOrBlank()) Text(chip, color = C.reason, fontSize = 11.sp, maxLines = 1)
+        }
+        if (!st.template) {
+            Box {
+                SmallBtn("⋮") { setMenu(true) }
+                DropdownMenu(menu, { setMenu(false) }, Modifier.background(C.edPanel)) {
+                    DropdownMenuItem(text = { Text("★ Save as my layout", color = Color(0xFFE6E8EE)) }, onClick = {
+                        setMenu(false)
+                        vm.saveMyLayout(st.comp.copy(layers = st.comp.layers.filter { it.isVideo }), fromTemplate = false) // text is per clip
+                        st.chip = "★ Saved as my layout"
+                    })
+                    DropdownMenuItem(text = { Text("↻ Apply layout to all clips", color = Color(0xFFE6E8EE)) }, onClick = {
+                        setMenu(false)
+                        vm.applyToAll(st.comp, target.item)
+                        st.chip = "↻ Layout applied to all clips"
+                    })
+                }
+            }
+        }
+        SmallBtn(if (st.template) "Save layout" else "Save", selected = true) { save() }
+    }
 }
 
 @Composable
 private fun StageArea(st: EditorState, glView: EditorGlView, hint: String?, modifier: Modifier) {
-    Column(modifier) {
-        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.Center) {
-            EdButton("▣  Canvas", selected = st.mode == "canvas") { st.setModeChecked("canvas") }
-            Spacer(Modifier.width(4.dp))
-            EdButton("▢  Source video", selected = st.mode == "source") { st.setModeChecked("source") }
+    Box(modifier.background(C.stage)) {
+        AndroidView({ (glView.parent as? android.view.ViewGroup)?.removeView(glView); glView }, Modifier.fillMaxSize())
+        EditorOverlay(st) {}
+        // Canvas / Source switch floats over the preview so the video keeps all the room.
+        Row(Modifier.align(Alignment.TopStart).padding(6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            SmallBtn("Canvas", selected = st.mode == "canvas") { st.setModeChecked("canvas") }
+            SmallBtn("Source", selected = st.mode == "source") { st.setModeChecked("source") }
         }
-        Text(
-            hint ?: if (st.mode == "source") "Source video: drag/resize the selected layer's box to choose what part of the video it shows"
-            else "Canvas: this is your finished clip. Drag layers to move them, drag a corner or pinch to resize",
-            color = C.muted, fontSize = 12.sp, modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
-        )
-        Box(Modifier.weight(1f).fillMaxWidth().background(C.stage, RoundedCornerShape(10.dp))) {
-            AndroidView({ (glView.parent as? android.view.ViewGroup)?.removeView(glView); glView }, Modifier.fillMaxSize())
-            EditorOverlay(st) {}
+        if (hint != null) {
+            Text(hint, color = C.reason, fontSize = 12.sp, modifier = Modifier.align(Alignment.BottomCenter)
+                .background(Color(0xCC0B0C10)).padding(6.dp))
         }
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun Transport(
     st: EditorState, duration: Double, playing: Boolean, muted: Boolean,
-    toggle: () -> Unit, step: (Double) -> Unit, frame: (Int) -> Unit, playSelection: () -> Unit, setMuted: (Boolean) -> Unit,
+    toggle: () -> Unit, step: (Double) -> Unit, frame: (Int) -> Unit, setMuted: (Boolean) -> Unit,
 ) {
-    FlowRow(
+    Row(
         Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically,
     ) {
-        EdButton("⏪") { step(-5.0) }
-        EdButton("◀|") { frame(-1) }
-        EdButton(if (playing) "⏸" else "▶", selected = true) { toggle() }
-        EdButton("|▶") { frame(1) }
-        EdButton("⏩") { step(5.0) }
+        SmallBtn("⏪") { step(-5.0) }
+        SmallBtn("◀|") { frame(-1) }
+        SmallBtn(if (playing) "⏸" else "▶", selected = true) { toggle() }
+        SmallBtn("|▶") { frame(1) }
+        SmallBtn("⏩") { step(5.0) }
         Text(
-            "${fmtPrecise(st.pos)} / ${fmtTime(duration)}", color = Color(0xFFDFE2EA), fontFamily = FontFamily.Monospace, fontSize = 13.sp,
-            modifier = Modifier.align(Alignment.CenterVertically).padding(horizontal = 6.dp),
+            "${fmtPrecise(st.pos)} / ${fmtTime(duration)}", color = Color(0xFFDFE2EA), fontFamily = FontFamily.Monospace,
+            fontSize = 12.sp, maxLines = 1, modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
         )
-        if (!st.template) EdButton("▶ Play clip") { playSelection() }
-        EdButton(if (muted) "🔇" else "🔊", selected = muted) { setMuted(!muted) }
+        SmallBtn(if (muted) "🔇" else "🔊", selected = muted) { setMuted(!muted) }
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun TrimRow(st: EditorState, now: () -> Double) {
-    FlowRow(
-        Modifier.fillMaxWidth().padding(vertical = 2.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp),
+private fun TrimRow(st: EditorState, now: () -> Double, playSelection: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(bottom = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (!st.template) {
-            EdButton("[  Set start here") { st.markIn(now()) }
-            EdButton("Set end here  ]") { st.markOut(now()) }
-            Text(
-                "Clip ${fmtPrecise(st.s0)} → ${fmtPrecise(st.s1)}  •  ${"%.1f".format(st.s1 - st.s0)}s",
-                color = C.muted, fontSize = 12.sp, modifier = Modifier.align(Alignment.CenterVertically),
-            )
-        }
-        EdButton("↔ Show more timeline") { st.widen() }
+        SmallBtn("[ Start") { st.markIn(now()) }
+        SmallBtn("End ]") { st.markOut(now()) }
+        Text(
+            "${fmtPrecise(st.s0)}→${fmtPrecise(st.s1)} • ${"%.1f".format(st.s1 - st.s0)}s",
+            color = C.muted, fontSize = 11.sp, maxLines = 1, modifier = Modifier.weight(1f),
+        )
+        SmallBtn("▶ Clip") { playSelection() }
+    }
+}
+
+@Composable
+private fun ToolBar(st: EditorState, tab: String, toggle: (String) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 5.dp).horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        SmallBtn(if (tab == "layers") "▼ Layers" else "Layers", selected = tab == "layers") { toggle("layers") }
+        SmallBtn(if (tab == "props") "▼ Edit layer" else "Edit layer", selected = tab == "props") { toggle("props") }
+        SmallBtn("+ Text") { st.addText(); if (tab != "props") toggle("props") }
+        SmallBtn("+ Video") { st.addVideo() }
+        SmallBtn("↔ Timeline") { st.widen() }
     }
 }

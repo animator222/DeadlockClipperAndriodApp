@@ -35,8 +35,10 @@ same file under *Artifacts*.)
    - **Edit my layout...** builds your own look once in the editor — e.g. zoomed gameplay, your
      webcam in a corner and your item bar at the bottom. Saved separately for each video shape and
      export shape.
-   - **Set kill badge area...** if kills are missed: find a moment with a kill, drag a box around
-     the badge and tap **Check this frame**. Saved separately for vertical and horizontal videos.
+   - **Set kill badge area...** if kills are missed: move to a moment with a kill (slider, ▶ or
+     frame by frame). The **live check** says on every frame whether a kill badge is inside your
+     box and circles it; drag a box yourself or tap **Fit box to badge**, leave about one
+     badge-width of room around it, then **Save**. Saved separately for vertical and horizontal videos.
    - **Save clips to:** the folder inside your phone's **Movies** folder (default
      `Movies/Deadlock Clips`). Clips also show up in your gallery.
 3. **Find highlights.** The whole video is checked for your kill badge using the phone's video
@@ -47,8 +49,12 @@ same file under *Artifacts*.)
    picked. Tick the clips you want; **Delete** removes one; **Re-pick clips** re-chooses with a
    different fight sensitivity without re-scanning; **See what was detected** shows every moment
    that looked like your kill badge.
-   - **Play / Edit** (or tap the thumbnail) opens the **editor**:
-     - **Canvas** shows the finished clip, live while it plays. **Source video** shows the recording.
+   - **Play / Edit** (or tap the thumbnail) opens the **editor**. On a phone the preview fills
+     most of the screen; under it are the playback buttons, the trim buttons and a slim timeline
+     (pinch it to zoom in/out). **Layers** and **Edit layer** at the bottom open their panel over
+     the lower part of the screen; tap again to close it. Turn the phone sideways for a bigger
+     preview with the controls on the right.
+     - **Canvas** shows the finished clip, live while it plays. **Source** shows the recording.
      - **Layers**: top of the list = in front, untick to hide. **Gameplay**: drag to move, drag a
        corner to resize, pinch to zoom. **+ Video** adds another part of the recording (webcam, item
        bar, minimap...): mark *which part* on **Source video**, then place it on **Canvas**.
@@ -70,15 +76,17 @@ Exactly like the PC app (the same code, ported and checked against it):
 
 | What | How it's detected |
 |---|---|
-| Your kill or assist | The red **KILL / ASSIST** badge above your crosshair — the current badge is found by the mint-green souls amount ("$186") inside it, older badges by their white text |
+| Your kill or assist | The red **KILL / ASSIST** badge above your crosshair — recognised by its shape (matched against real badges), its red ring and the text inside; older white-text badges are recognised too. One clear sighting or two weaker ones count. |
 | Multikill | Two or more badges within 12 seconds |
 | Teamfight | A kill badge during at least 5 seconds of loud game audio |
 | Your death | The screen turning grey (death screen) |
 | Creep farming | Ignored: loud, but no badge |
-| Buy menu | Ignored: badges within 4 seconds of an open shop don't count |
+| Buy menu | Ignored: badges within 4 seconds of the shop being open (seen for at least 1.5 s) don't count |
 
-Clip length follows the action: each clip starts when the fight starts and ends when it calms down
-after your last kill; your *Clip length* setting is the allowed range.
+Clip length follows the action: each clip starts when the fight around your kill starts and ends
+when it calms down, judged by how loud that fight is compared with the rest of the video (so it
+works for YouTube downloads too). Your *Clip length* setting is the allowed range; each clip's
+reason line says how long the fight was (e.g. "Fight about 8s (padded to your 30s minimum)").
 
 ## If something goes wrong: logs
 

@@ -23,7 +23,7 @@ import java.util.zip.GZIPOutputStream
 /** Runs the scans in order (audio first, then the video) and saves the results. */
 object Analyzer {
     private const val TAG = "analysis"
-    const val ANALYSIS_VERSION = 6 // same detection as the PC app's version 6
+    const val ANALYSIS_VERSION = 7 // same detection as the PC app's version 7 (template-based badge)
     private const val MAGIC = 0x444C4331 // "DLC1"
 
     private fun cacheKey(info: VideoInfo, quick: Boolean, region: List<Double>): String {

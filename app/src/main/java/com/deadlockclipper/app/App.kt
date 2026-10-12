@@ -22,5 +22,10 @@ class App : Application() {
             false
         }
         AppLog.i("startup", "OpenCV loaded: $cv")
+        try {
+            com.deadlockclipper.app.media.BadgeDetector.init(assets)
+        } catch (e: Throwable) {
+            AppLog.e("startup", "Kill badge templates failed to load", e)
+        }
     }
 }

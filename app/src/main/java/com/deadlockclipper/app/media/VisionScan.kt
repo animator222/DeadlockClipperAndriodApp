@@ -278,7 +278,7 @@ object VisionScan {
 
             val crop = bgr.rowRange(0, geo.cropH)
             val hsv = BadgeDetector.toHsv(crop)
-            val found = BadgeDetector.detect(hsv, geo.scale, minOf(info.width, info.height))
+            val found = BadgeDetector.detect(crop, hsv, geo.scale, minOf(info.width, info.height))
             val panel = BadgeDetector.panelFraction(hsv)
             hsv.release()
             val thumb = bgr.submat(Range(geo.cropH, frameH), Range(0, THUMB_W))
