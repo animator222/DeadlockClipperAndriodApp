@@ -4,6 +4,8 @@ import android.graphics.RectF
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -52,10 +54,15 @@ fun EditorOverlay(st: EditorState, onTouched: () -> Unit) {
                     val pressed = event.changes.filter { it.pressed }
                     if (pressed.isEmpty()) break
                     if (pressed.size >= 2) {
-                        // Pinch: zoom the selected layer (like the mouse wheel on the PC).
                         pinching = true
                         val zoom = event.calculateZoom()
-                        if (zoom != 1f && st.mode == "canvas") {
+                        if (st.mode == "source") {
+                            // Source view: pinch zooms into the video, two fingers move around it.
+                            val c = event.calculateCentroid()
+                            val pan = event.calculatePan()
+                            st.zoomSource(zoom, c.x, c.y, pan.x, pan.y, w, h)
+                        } else if (zoom != 1f) {
+                            // Canvas: pinch zooms the selected layer (like the mouse wheel on the PC).
                             st.updateCurrent { lay ->
                                 if (lay.isVideo) lay.copy(dst = listOf(lay.dst[0], lay.dst[1], (lay.dst[2] * zoom).coerceIn(0.03, 6.0)))
                                 else lay.copy(size = (lay.size * zoom).coerceIn(0.008, 0.4))
@@ -68,6 +75,13 @@ fun EditorOverlay(st: EditorState, onTouched: () -> Unit) {
                             if (drag.kind.startsWith("src")) dragSource(st, w, h, drag, p) else dragCanvas(st, w, h, drag, p)
                             pressed[0].consume()
                         }
+                    } else if (!pinching && st.mode == "source" && st.srcZoom > 1f) {
+                        // One finger on an empty part of the zoomed video moves around it.
+                        val d = pressed[0].positionChange()
+                        if (d != Offset.Zero) {
+                            st.panSource(d.x, d.y, w, h)
+                            pressed[0].consume()
+                        }
                     }
                 }
                 st.guideX = false
@@ -77,7 +91,7 @@ fun EditorOverlay(st: EditorState, onTouched: () -> Unit) {
     ) {
         val comp = st.comp
         if (st.mode == "source") {
-            val (sr, _) = Stage.fit(size.width, size.height, st.info.width.toFloat(), st.info.height.toFloat())
+            val sr = st.sourceRect(size.width, size.height)
             comp.layers.forEachIndexed { i, lay ->
                 if (!lay.isVideo) return@forEachIndexed
                 val r = srcBox(lay, sr)
@@ -159,7 +173,7 @@ private class Drag(val kind: String, val corner: String?, val start: Offset, val
 private fun press(st: EditorState, w: Float, h: Float, p: Offset, handle: Float): Drag? {
     val comp = st.comp
     if (st.mode == "source") {
-        val (sr, _) = Stage.fit(w, h, st.info.width.toFloat(), st.info.height.toFloat())
+        val sr = st.sourceRect(w, h)
         st.current?.takeIf { it.isVideo }?.let { lay ->
             val r = srcBox(lay, sr)
             hitCorner(r, p, handle)?.let { return Drag("src-resize", it, p, lay, r) }
@@ -231,7 +245,7 @@ private fun dragCanvas(st: EditorState, w: Float, h: Float, d: Drag, p: Offset) 
 }
 
 private fun dragSource(st: EditorState, w: Float, h: Float, d: Drag, p: Offset) {
-    val (sr, _) = Stage.fit(w, h, st.info.width.toFloat(), st.info.height.toFloat())
+    val sr = st.sourceRect(w, h)
     val (x, y, sw, sh) = d.orig.src
     if (d.kind == "src-move") {
         val nx = (x + (p.x - d.start.x) / sr.width()).coerceIn(0.0, 1 - sw)

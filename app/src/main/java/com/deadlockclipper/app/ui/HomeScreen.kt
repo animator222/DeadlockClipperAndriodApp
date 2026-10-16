@@ -4,6 +4,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -86,6 +87,13 @@ fun HomeScreen(vm: AppViewModel) {
             keyboardActions = KeyboardActions(onGo = { if (url.isNotBlank()) vm.openUrl(url.trim()) }),
             colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = C.primary, unfocusedBorderColor = C.buttonBorder, focusedTextColor = C.text, unfocusedTextColor = C.text),
         )
+        Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+            Subtle("Quality:", size = 14)
+            for ((h, label) in listOf(720 to "720p (faster)", 1080 to "1080p", 0 to "Best")) {
+                RadioRow(label, vm.settings.youtubeMaxHeight == h) { vm.updateSettings(vm.settings.copy(youtubeMaxHeight = h)) }
+            }
+        }
+        Subtle("720p is about half the download of 1080p and is still plenty for finding kills.", size = 12)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             SecondaryButton("Paste") { clipboard.getText()?.text?.let { url = it.trim() } }
             PrimaryButton("Download", enabled = url.isNotBlank()) { vm.openUrl(url.trim()) }

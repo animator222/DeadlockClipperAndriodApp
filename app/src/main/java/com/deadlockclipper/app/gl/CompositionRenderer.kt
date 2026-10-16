@@ -195,25 +195,24 @@ class CompositionRenderer {
     }
 
     /**
-     * The source video with each video layer's area marked (editor "Source video" view).
-     * The caller sets the viewport to the frame's area.
+     * The source video with each video layer's area marked (editor "Source video" view), drawn
+     * into the rect (x, y, w, h) of the current space (the caller sets viewport and space).
      */
-    fun drawSource(src: Source?, comp: Comp) {
+    fun drawSource(src: Source?, comp: Comp, x: Float, y: Float, w: Float, h: Float) {
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
-        space(1f, 1f)
         blend(false)
         if (src == null) {
-            fill(0.11f, 0.12f, 0.17f, 1f, 0f, 0f, 1f, 1f)
+            fill(0.11f, 0.12f, 0.17f, 1f, x, y, w, h)
             return
         }
-        drawImage(src, 0f, 0f, 1f, 1f, 0f, 0f, 1f, 1f)
+        drawImage(src, 0f, 0f, 1f, 1f, x, y, w, h)
         blend(true)
-        fill(0f, 0f, 0f, 90f / 255f, 0f, 0f, 1f, 1f)
+        fill(0f, 0f, 0f, 90f / 255f, x, y, w, h)
         blend(false)
         for (lay in comp.layers) {
             if (!lay.isVideo) continue
-            val (x, y, w, h) = lay.src.map { it.toFloat() }
-            drawImage(src, x, y, x + w, y + h, x, y, w, h) // undimmed inside
+            val (sx, sy, sw, sh) = lay.src.map { it.toFloat() }
+            drawImage(src, sx, sy, sx + sw, sy + sh, x + sx * w, y + sy * h, sw * w, sh * h) // undimmed inside
         }
     }
 

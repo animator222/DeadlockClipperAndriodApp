@@ -13,8 +13,8 @@ android {
         applicationId = "com.deadlockclipper.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.17.0"
+        versionCode = 5
+        versionName = "0.17.1"
         // Phones (64 and 32 bit ARM) and the Android emulator / Chromebooks (x86_64).
         buildConfigField("String", "NEWPIPE_VERSION", "\"" + ((project.findProperty("newpipeVersion") as String?)?.takeIf { it.isNotBlank() } ?: "v0.24.8") + "\"")
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }

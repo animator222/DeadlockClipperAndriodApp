@@ -197,8 +197,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             error = ErrorInfo("That doesn't look like a YouTube link.", url)
             return
         }
+        val quality = settings.youtubeMaxHeight
+        saveSettings()
         runJob("Downloading from YouTube", Screen.Home, work = { t ->
-            val file = YouTube.download(url, paths.downloads, t)
+            val file = YouTube.download(url, paths.downloads, quality, t)
             Probe.probe(ctx, Uri.fromFile(file))
         }) { v -> setVideo(v) }
     }

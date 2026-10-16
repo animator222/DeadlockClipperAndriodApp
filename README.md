@@ -28,6 +28,8 @@ same file under *Artifacts*.)
 
 1. **Pick a video.** Tap **Choose a video file...**, or in your gallery / file manager use
    **Share → Deadlock Clipper**, or paste a YouTube link (local files are better quality and faster).
+   YouTube downloads use several connections at once; pick **720p (faster)** to download about
+   half as much as 1080p (still plenty for finding kills).
 2. **Settings.** How many clips (or **All highlights**), how long, **Export as** vertical
    (Shorts/Reels) or horizontal (YouTube), and the look (tap a preview): **Full frame**,
    **Zoomed gameplay** (Zoom 110-250%) or **My layout**, and what counts as a highlight.
@@ -54,7 +56,9 @@ same file under *Artifacts*.)
      (pinch it to zoom in/out). **Layers** and **Edit layer** at the bottom open their panel over
      the lower part of the screen; tap again to close it. Turn the phone sideways for a bigger
      preview with the controls on the right.
-     - **Canvas** shows the finished clip, live while it plays. **Source** shows the recording.
+     - **Canvas** shows the finished clip, live while it plays. **Source** shows the recording;
+       **pinch to zoom into it** and drag with two fingers (or one finger on an empty spot) to move
+       around, so small areas like the item bar can be marked exactly. Tap the zoom button to reset.
      - **Layers**: top of the list = in front, untick to hide. **Gameplay**: drag to move, drag a
        corner to resize, pinch to zoom. **+ Video** adds another part of the recording (webcam, item
        bar, minimap...): mark *which part* on **Source video**, then place it on **Canvas**.

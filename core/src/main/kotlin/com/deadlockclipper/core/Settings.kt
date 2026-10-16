@@ -26,6 +26,7 @@ data class Settings(
     @SerialName("quick_scan") val quickScan: Boolean = false,
     @SerialName("pre_roll") val preRoll: Double = 4.0,
     @SerialName("post_roll") val postRoll: Double = 3.0,
+    @SerialName("youtube_max_height") val youtubeMaxHeight: Int = 1080, // YouTube download quality, 0 = best
 ) {
     fun validate(): Settings {
         val maxL = maxLen.coerceIn(5, 60)
@@ -48,6 +49,7 @@ data class Settings(
             badgeRegionLandscape = badgeRegionLandscape?.takeIf(::validBox),
             badgeRegionPortrait = badgeRegionPortrait?.takeIf(::validBox),
             outputDir = folder,
+            youtubeMaxHeight = if (youtubeMaxHeight in setOf(0, 480, 720, 1080, 1440)) youtubeMaxHeight else 1080,
         )
     }
 

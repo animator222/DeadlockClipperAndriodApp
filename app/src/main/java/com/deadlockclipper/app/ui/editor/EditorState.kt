@@ -2,6 +2,7 @@ package com.deadlockclipper.app.ui.editor
 
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -31,6 +32,46 @@ class EditorState(val info: VideoInfo, target: EditorTarget) {
     var guideX by mutableStateOf(false)
     var guideY by mutableStateOf(false)
     var stopAt: Double? = null
+
+    // Source view zoom (pinch) so small areas like the item bar can be marked precisely.
+    var srcZoom by mutableFloatStateOf(1f)
+    var srcPanX by mutableFloatStateOf(0f)
+    var srcPanY by mutableFloatStateOf(0f)
+
+    fun sourceRect(viewW: Float, viewH: Float) = Stage.sourceRect(viewW, viewH, info.width, info.height, srcZoom, srcPanX, srcPanY)
+
+    private fun clampPan(viewW: Float, viewH: Float) {
+        val base = Stage.fit(viewW, viewH, info.width.toFloat(), info.height.toFloat()).first
+        val mx = maxOf(0f, (base.width() * srcZoom - base.width()) / 2)
+        val my = maxOf(0f, (base.height() * srcZoom - base.height()) / 2)
+        srcPanX = srcPanX.coerceIn(-mx, mx)
+        srcPanY = srcPanY.coerceIn(-my, my)
+    }
+
+    /** Zoom the Source view by [factor], keeping the point under ([fx], [fy]) in place, and move it by ([dx], [dy]). */
+    fun zoomSource(factor: Float, fx: Float, fy: Float, dx: Float, dy: Float, viewW: Float, viewH: Float) {
+        val r = sourceRect(viewW, viewH)
+        val base = Stage.fit(viewW, viewH, info.width.toFloat(), info.height.toFloat()).first
+        val newZoom = (srcZoom * factor).coerceIn(1f, 8f)
+        val u = (fx - r.left) / r.width()
+        val v = (fy - r.top) / r.height()
+        val nw = base.width() * newZoom
+        val nh = base.height() * newZoom
+        srcZoom = newZoom
+        srcPanX = fx - u * nw + nw / 2 - base.centerX() + dx
+        srcPanY = fy - v * nh + nh / 2 - base.centerY() + dy
+        clampPan(viewW, viewH)
+    }
+
+    fun panSource(dx: Float, dy: Float, viewW: Float, viewH: Float) {
+        srcPanX += dx
+        srcPanY += dy
+        clampPan(viewW, viewH)
+    }
+
+    fun resetSourceZoom() {
+        srcZoom = 1f; srcPanX = 0f; srcPanY = 0f
+    }
 
     init {
         val pad = maxOf(20.0, (target.end - target.start) * 0.6)

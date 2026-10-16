@@ -147,6 +147,9 @@ fun EditorScreen(vm: AppViewModel, target: EditorTarget) {
         glView.comp = st.comp
         glView.sourceMode = st.mode == "source"
     }
+    LaunchedEffect(st.srcZoom, st.srcPanX, st.srcPanY) {
+        glView.sourceView = floatArrayOf(st.srcZoom, st.srcPanX, st.srcPanY)
+    }
     LaunchedEffect(muted) { player.volume = if (muted) 0f else 1f }
     LaunchedEffect(target) {
         while (true) {
@@ -350,6 +353,10 @@ private fun StageArea(st: EditorState, glView: EditorGlView, hint: String?, modi
         Row(Modifier.align(Alignment.TopStart).padding(6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             SmallBtn("Canvas", selected = st.mode == "canvas") { st.setModeChecked("canvas") }
             SmallBtn("Source", selected = st.mode == "source") { st.setModeChecked("source") }
+            if (st.mode == "source") {
+                if (st.srcZoom > 1.01f) SmallBtn("%.1fx  ✕".format(st.srcZoom)) { st.resetSourceZoom() }
+                else Text("Pinch to zoom", color = C.muted, fontSize = 11.sp, modifier = Modifier.align(Alignment.CenterVertically))
+            }
         }
         if (hint != null) {
             Text(hint, color = C.reason, fontSize = 12.sp, modifier = Modifier.align(Alignment.BottomCenter)

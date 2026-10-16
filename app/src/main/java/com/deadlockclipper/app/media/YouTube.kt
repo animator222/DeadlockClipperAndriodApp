@@ -30,9 +30,10 @@ object YouTube {
     private const val TAG = "youtube"
     private const val FAILED = "YouTube download failed — try the local file instead."
     private const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
-    private const val CHUNK = 10L * 1024 * 1024 // YouTube slows down big single requests
+    private const val CHUNK = 8L * 1024 * 1024 // YouTube slows down big single requests
 
     private val http = OkHttpClient.Builder()
+        .connectionPool(okhttp3.ConnectionPool(8, 5, TimeUnit.MINUTES))
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
@@ -65,8 +66,8 @@ object YouTube {
 
     fun isYouTubeLink(text: String) = Regex("(youtube\\.com|youtu\\.be)/", RegexOption.IGNORE_CASE).containsMatchIn(text)
 
-    /** Downloads the video; returns the file. */
-    fun download(url: String, folder: File, task: Task): File {
+    /** Downloads the video; returns the file. [maxHeight] 0 = best quality, else e.g. 720. */
+    fun download(url: String, folder: File, maxHeight: Int, task: Task): File {
         init()
         AppLog.i(TAG, "Downloading $url (extractor ${BuildConfig.NEWPIPE_VERSION})")
         try {
@@ -74,14 +75,14 @@ object YouTube {
             val ex = ServiceList.YouTube.getStreamExtractor(url.trim())
             ex.fetchPage()
             val title = ex.name.replace(Regex("[^A-Za-z0-9 _.-]"), "_").replace(Regex("_+"), "_").take(80).trim()
-            val base = "$title [${ex.id}]"
+            val base = "$title [${ex.id}]" + if (maxHeight > 0) " ${maxHeight}p" else ""
             folder.mkdirs()
             File(folder, "$base.mp4").takeIf { it.length() > 0 }?.let {
                 AppLog.i(TAG, "Already downloaded: $it")
                 return it
             }
 
-            val video = pickVideo(ex.videoOnlyStreams)
+            val video = pickVideo(ex.videoOnlyStreams, maxHeight)
             val audio = pickAudio(ex.audioStreams, video?.format)
             if (video != null && audio != null) {
                 val webm = video.format == MediaFormat.WEBM
@@ -94,8 +95,40 @@ object YouTube {
                 val vSize = sizeOf(vSrc)
                 val aSize = sizeOf(aSrc)
                 val total = (vSize + aSize).coerceAtLeast(1).toDouble()
-                fetch(vSrc, vFile, vSize, task) { done -> task.progress(0.99 * done / total, "Downloading from YouTube") }
-                fetch(aSrc, aFile, aSize, task) { done -> task.progress(0.99 * (vSize + done) / total, "Downloading from YouTube") }
+                // Video and audio at the same time, each in several pieces at once.
+                val vDone = java.util.concurrent.atomic.AtomicLong()
+                val aDone = java.util.concurrent.atomic.AtomicLong()
+                val started = System.currentTimeMillis()
+                val report = {
+                    val got = vDone.get() + aDone.get()
+                    val secs = (System.currentTimeMillis() - started) / 1000.0
+                    val speed = if (secs > 1) got / secs / 1_048_576 else 0.0
+                    task.progress(0.99 * got / total, "Downloading from YouTube: %d of %d MB (%.1f MB/s)".format(got / 1_048_576, (vSize + aSize) / 1_048_576, speed))
+                }
+                val audioError = arrayOfNulls<Throwable>(1)
+                val audioThread = Thread {
+                    try {
+                        fetch(aSrc, aFile, aSize, task, 2) { aDone.set(it); report() }
+                    } catch (e: Throwable) {
+                        audioError[0] = e
+                        task.cancel()
+                    }
+                }.apply { start() }
+                try {
+                    fetch(vSrc, vFile, vSize, task, VIDEO_CONNECTIONS) { vDone.set(it); report() }
+                } catch (e: Cancelled) {
+                    audioThread.join()
+                    audioError[0]?.let { throw it } // the audio failed and stopped the video download
+                    throw e
+                } catch (e: Throwable) {
+                    audioThread.interrupt()
+                    task.cancel()
+                    audioThread.join()
+                    throw e
+                }
+                audioThread.join()
+                audioError[0]?.let { throw it }
+                AppLog.i(TAG, "Downloaded %d MB in %.0fs".format((vSize + aSize) / 1_048_576, (System.currentTimeMillis() - started) / 1000.0))
                 task.progress(0.99, "Joining video and audio")
                 mux(vFile, aFile, out, webm)
                 vFile.delete()
@@ -110,7 +143,7 @@ object YouTube {
             val out = File(folder, "$base.mp4")
             val src = Link(muxed.content) { freshUrl(url, muxed.itag, null) }
             val size = sizeOf(src)
-            fetch(src, out, size, task) { done -> task.progress(0.99 * done / size.coerceAtLeast(1), "Downloading from YouTube") }
+            fetch(src, out, size, task, VIDEO_CONNECTIONS) { done -> task.progress(0.99 * done / size.coerceAtLeast(1), "Downloading from YouTube") }
             return out
         } catch (e: Cancelled) {
             throw e
@@ -130,8 +163,11 @@ object YouTube {
     }
 
     /** Highest resolution and frame rate the phone can decode; H.264 first (every phone decodes it). */
-    private fun pickVideo(streams: List<VideoStream>): VideoStream? {
-        val usable = streams.filter { it.isUrl && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP }
+    private fun pickVideo(streams: List<VideoStream>, maxHeight: Int): VideoStream? {
+        val all = streams.filter { it.isUrl && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP }
+        // Respect the chosen quality limit (by the short side, so vertical videos work too).
+        val limited = if (maxHeight > 0) all.filter { minOf(it.height, if (it.width > 0) it.width else it.height) <= maxHeight } else all
+        val usable = limited.ifEmpty { all }
         val avc = usable.filter { it.format == MediaFormat.MPEG_4 && (it.codec ?: "").startsWith("avc1") }
         val vp9 = usable.filter { it.format == MediaFormat.WEBM && (it.codec ?: "").startsWith("vp9") && Codecs.decoders("video/x-vnd.on2.vp9").isNotEmpty() }
         val best = { list: List<VideoStream> -> list.maxWithOrNull(compareBy<VideoStream> { it.height }.thenBy { it.fps }.thenBy { it.bitrate }) }
@@ -149,7 +185,7 @@ object YouTube {
     }
 
     /** A stream link that can be replaced by a fresh one when YouTube stops accepting it. */
-    private class Link(var url: String, val refresh: () -> String?)
+    private class Link(@Volatile var url: String, val refresh: () -> String?)
 
     /** Looks the video up again and returns a new link for the same stream (itag). */
     private fun freshUrl(pageUrl: String, itag: Int, videoOnly: Boolean?): String? = try {
@@ -210,23 +246,115 @@ object YouTube {
         }
     }
 
-    private fun fetch(link: Link, out: File, size: Long, task: Task, progress: (Long) -> Unit) {
-        AppLog.i(TAG, "Fetching ${if (size > 0) "${size / 1_048_576} MB" else "stream"} (client ${clientOf(link.url)})")
+    private const val VIDEO_CONNECTIONS = 4
+
+    /**
+     * Downloads a stream with [connections] requests at once (YouTube limits the speed of each
+     * single connection). [progress] gets the number of bytes downloaded so far.
+     */
+    private fun fetch(link: Link, out: File, size: Long, task: Task, connections: Int, progress: (Long) -> Unit) {
+        AppLog.i(TAG, "Fetching ${if (size > 0) "${size / 1_048_576} MB" else "stream"} with $connections connections (client ${clientOf(link.url)})")
+        if (size <= 0) {
+            fetchSequential(link, out, task, progress)
+            return
+        }
+        RandomAccessFile(out, "rw").use { it.setLength(size) }
+        val pieces = java.util.concurrent.ConcurrentLinkedQueue<Long>()
+        var p = 0L
+        while (p < size) {
+            pieces.add(p); p += CHUNK
+        }
+        val done = java.util.concurrent.atomic.AtomicLong()
+        val requestNo = java.util.concurrent.atomic.AtomicInteger(1)
+        val refreshes = java.util.concurrent.atomic.AtomicInteger()
+        val linkVersion = java.util.concurrent.atomic.AtomicInteger()
+        val failure = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(connections)
+        repeat(connections) {
+            pool.submit(Runnable {
+                try {
+                    RandomAccessFile(out, "rw").use { raf ->
+                        val buf = ByteArray(256 * 1024)
+                        while (failure.get() == null) {
+                            val start = pieces.poll() ?: break
+                            val end = minOf(size - 1, start + CHUNK - 1)
+                            var attempt = 0
+                            while (true) {
+                                if (task.isCancelled) throw Cancelled()
+                                val version = linkVersion.get()
+                                var got = 0L
+                                try {
+                                    raf.seek(start)
+                                    http.newCall(pieceRequest(link.url, start, end, requestNo.getAndIncrement())).execute().use { r ->
+                                        if (!r.isSuccessful) throw HttpError(r.code)
+                                        val body = r.body ?: throw java.io.IOException("empty body")
+                                        body.byteStream().use { input ->
+                                            while (true) {
+                                                val n = input.read(buf)
+                                                if (n < 0) break
+                                                val take = minOf(n.toLong(), end + 1 - start - got).toInt()
+                                                if (take <= 0) break
+                                                raf.write(buf, 0, take)
+                                                got += take
+                                                progress(done.addAndGet(take.toLong()))
+                                                if (task.isCancelled) throw Cancelled()
+                                            }
+                                        }
+                                    }
+                                    if (got < end + 1 - start) throw java.io.IOException("piece cut short ($got of ${end + 1 - start} bytes)")
+                                    break
+                                } catch (e: java.io.IOException) {
+                                    done.addAndGet(-got)
+                                    // 403/410: the link was cut off or expired. One connection gets a fresh
+                                    // link for everyone; the others just retry with it.
+                                    if (e is HttpError && (e.code == 403 || e.code == 410)) {
+                                        synchronized(link) {
+                                            if (linkVersion.get() == version) {
+                                                if (refreshes.incrementAndGet() > 8) throw e
+                                                AppLog.w(TAG, "YouTube refused the link at $start (HTTP ${e.code}); getting a fresh link")
+                                                Thread.sleep(1500)
+                                                link.refresh()?.let { link.url = it } ?: throw e
+                                                linkVersion.incrementAndGet()
+                                            }
+                                        }
+                                        continue
+                                    }
+                                    if (++attempt > 5) throw e
+                                    AppLog.w(TAG, "Download hiccup at $start (attempt $attempt): $e")
+                                    Thread.sleep(1000L shl minOf(attempt, 4))
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Throwable) {
+                    failure.compareAndSet(null, e)
+                }
+            })
+        }
+        pool.shutdown()
+        while (!pool.awaitTermination(200, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+            if (task.isCancelled) failure.compareAndSet(null, Cancelled())
+        }
+        failure.get()?.let { throw it }
+        if (done.get() < size) throw java.io.IOException("Download stopped at ${done.get()} of $size bytes")
+    }
+
+    /** For the rare stream whose size isn't known: one piece after another. */
+    private fun fetchSequential(link: Link, out: File, task: Task, progress: (Long) -> Unit) {
         RandomAccessFile(out, "rw").use { raf ->
             raf.setLength(0)
             var pos = 0L
             var requestNo = 1
             var refreshes = 0
             val buf = ByteArray(256 * 1024)
-            while (size < 0 || pos < size) {
+            while (true) {
                 task.check()
-                val endByte = if (size < 0) pos + CHUNK - 1 else minOf(size - 1, pos + CHUNK - 1)
                 var got = 0L
                 var attempt = 0
                 while (true) {
                     try {
-                        http.newCall(pieceRequest(link.url, pos, endByte, requestNo++)).execute().use { r ->
-                            if (r.code == 416) return // past the end (unknown size)
+                        http.newCall(pieceRequest(link.url, pos, pos + CHUNK - 1, requestNo++)).execute().use { r ->
+                            if (r.code == 416) return // past the end
                             if (!r.isSuccessful) throw HttpError(r.code)
                             val body = r.body ?: throw java.io.IOException("empty body")
                             body.byteStream().use { input ->
@@ -244,25 +372,20 @@ object YouTube {
                     } catch (e: java.io.IOException) {
                         raf.seek(pos)
                         got = 0
-                        // 403/410: this link was cut off or expired. Get a fresh one and carry on from here.
                         if (e is HttpError && (e.code == 403 || e.code == 410) && refreshes < 8) {
                             refreshes++
-                            AppLog.w(TAG, "YouTube refused the link at $pos (HTTP ${e.code}); getting a fresh link ($refreshes)")
                             Thread.sleep(1500)
                             link.refresh()?.let { link.url = it } ?: throw e
-                            attempt = 0
                             continue
                         }
                         if (++attempt > 4) throw e
-                        AppLog.w(TAG, "Download hiccup at $pos (attempt $attempt): $e")
                         Thread.sleep(1000L shl attempt)
                     }
                 }
                 if (got == 0L) break
                 pos += got
-                if (size < 0 && got < CHUNK) break
+                if (got < CHUNK) break
             }
-            if (size > 0 && pos < size) throw java.io.IOException("Download stopped at $pos of $size bytes")
         }
     }
 

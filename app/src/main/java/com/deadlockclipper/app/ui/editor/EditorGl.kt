@@ -29,6 +29,16 @@ object Stage {
         val t = (viewH - h) / 2
         return RectF(l, t, l + w, t + h) to k
     }
+
+    /** The source frame's rect in the Source view, zoomed by [zoom] and moved by [panX], [panY] (view px). */
+    fun sourceRect(viewW: Float, viewH: Float, frameW: Int, frameH: Int, zoom: Float, panX: Float, panY: Float): RectF {
+        val base = fit(viewW, viewH, frameW.toFloat(), frameH.toFloat()).first
+        val w = base.width() * zoom
+        val h = base.height() * zoom
+        val cx = base.centerX() + panX
+        val cy = base.centerY() + panY
+        return RectF(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
+    }
 }
 
 /**
@@ -45,6 +55,11 @@ class EditorGlView(context: Context, private val onSurface: (Surface?) -> Unit) 
 
     @Volatile
     var sourceMode = false
+        set(v) { field = v; requestRender() }
+
+    /** Source view zoom and pan: (zoom, panX, panY). */
+    @Volatile
+    var sourceView = floatArrayOf(1f, 0f, 0f)
         set(v) { field = v; requestRender() }
 
     private val renderer = object : Renderer {
@@ -99,9 +114,12 @@ class EditorGlView(context: Context, private val onSurface: (Surface?) -> Unit) 
                 val v = info ?: return
                 val src = if (hasFrame) Source(tex, true, matrix) else null
                 if (sourceMode) {
-                    val (rect, _) = Stage.fit(w.toFloat(), h.toFloat(), v.width.toFloat(), v.height.toFloat())
-                    viewport(rect)
-                    renderer.drawSource(src, c)
+                    val sv = sourceView
+                    val rect = Stage.sourceRect(w.toFloat(), h.toFloat(), v.width, v.height, sv[0], sv[1], sv[2])
+                    // Drawn in view pixels with the full view as viewport, so a zoomed frame can be
+                    // much bigger than the screen (only the visible part is drawn).
+                    renderer.space(w, h)
+                    renderer.drawSource(src, c, rect.left, rect.top, rect.width(), rect.height())
                 } else {
                     val (cw, ch) = c.size
                     val (rect, _) = Stage.fit(w.toFloat(), h.toFloat(), cw.toFloat(), ch.toFloat())
